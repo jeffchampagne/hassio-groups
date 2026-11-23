@@ -1,0 +1,157 @@
+create_group:
+  name: Create group
+  description: Create a new HA Groups user group.
+  fields:
+    name:
+      required: true
+      example: Teachers
+      selector:
+        text:
+    group_id:
+      name: Group ID
+      description: Optional slug id (defaults from name).
+      selector:
+        text:
+    description:
+      selector:
+        text:
+    icon:
+      example: mdi:account-group
+      selector:
+        icon:
+    member_user_ids:
+      name: Members
+      description: Home Assistant user IDs.
+      selector:
+        object:
+
+update_group:
+  name: Update group
+  fields:
+    group_id:
+      required: true
+      selector:
+        text:
+    name:
+      selector:
+        text:
+    description:
+      selector:
+        text:
+    icon:
+      selector:
+        icon:
+    member_user_ids:
+      selector:
+        object:
+
+delete_group:
+  name: Delete group
+  fields:
+    group_id:
+      required: true
+      selector:
+        text:
+
+set_members:
+  name: Set members
+  fields:
+    group_id:
+      required: true
+      selector:
+        text:
+    user_ids:
+      required: true
+      selector:
+        object:
+
+add_members:
+  name: Add members
+  fields:
+    group_id:
+      required: true
+      selector:
+        text:
+    user_ids:
+      required: true
+      selector:
+        object:
+
+remove_members:
+  name: Remove members
+  fields:
+    group_id:
+      required: true
+      selector:
+        text:
+    user_ids:
+      required: true
+      selector:
+        object:
+
+bind_element:
+  name: Bind element
+  description: Bind a Lovelace visibility node to include/exclude groups.
+  fields:
+    dashboard_url_path:
+      required: true
+      example: lovelace
+      selector:
+        text:
+    include:
+      required: true
+      selector:
+        object:
+    exclude:
+      selector:
+        object:
+    locator:
+      required: true
+      selector:
+        object:
+    merge_mode:
+      selector:
+        select:
+          options:
+            - replace_user_condition
+            - ensure_user_branch
+    label:
+      selector:
+        text:
+    fingerprint:
+      selector:
+        text:
+
+unbind_element:
+  name: Unbind element
+  fields:
+    binding_id:
+      required: true
+      selector:
+        text:
+
+sync:
+  name: Sync now
+  description: Rewrite managed Lovelace user visibility conditions.
+  fields:
+    dashboard:
+      name: Dashboard
+      description: Optional dashboard url_path filter.
+      selector:
+        text:
+    dry_run:
+      selector:
+        boolean:
+
+is_member:
+  name: Is member
+  description: Check whether a user is in a group (returns response).
+  fields:
+    group_id:
+      required: true
+      selector:
+        text:
+    user_id:
+      required: true
+      selector:
+        text:
