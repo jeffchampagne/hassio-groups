@@ -43,34 +43,6 @@ _LOGGER = logging.getLogger(__name__)
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 
-async def _async_get_users(hass: HomeAssistant) -> list[Any]:
-    """Return HA users; await when Core exposes async_get_users as a coroutine.
-
-    Older Core builds returned a list from the misnamed sync helper; HA 2026.11+
-    returns a real coroutine that must be awaited (else setup_error).
-    """
-    result = hass.auth.async_get_users()
-    if inspect.isawaitable(result):
-        return list(await result)
-    return list(result)
-
-
-def _get_users_sync(hass: HomeAssistant) -> list[Any]:
-    """Sync-safe user list for panel helpers.
-
-    When async_get_users is a coroutine function, do not call it from sync code —
-    read the already-loaded AuthStore map instead.
-    """
-    method = hass.auth.async_get_users
-    if inspect.iscoroutinefunction(method):
-        store = getattr(hass.auth, "_store", None)
-        users = getattr(store, "_users", None) if store is not None else None
-        if isinstance(users, dict):
-            return list(users.values())
-        return []
-    return list(method())
-
-
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     """Register panel + websocket early so the sidebar appears after setup."""
     hass.data.setdefault(DOMAIN, {})
@@ -131,6 +103,49 @@ class HassioGroupsRuntime:
         self.sensor_add_entities: Any | None = None
         self._services_registered = False
 
+
+    def _get_users_sync(self) -> list[Any]:
+        """Return HA users; compatible with sync or async async_get_users()."""
+        result = self.hass.auth.async_get_users()
+        if not inspect.isawaitable(result):
+            return list(result)
+        # HA 2026+: async_get_users is a coroutine. Prefer auth store, else person-linked stubs.
+        store = getattr(self.hass.auth, "_store", None)
+        for attr in ("users", "_users", "data"):
+            users = getattr(store, attr, None) if store is not None else None
+            if isinstance(users, dict):
+                vals = list(users.values())
+                if vals and all(hasattr(u, "id") for u in vals):
+                    return vals
+            if isinstance(users, list) and users and hasattr(users[0], "id"):
+                return list(users)
+        # Minimal stubs from person entities so sensors/panel still render.
+        class _Stub:
+            def __init__(self, uid: str, name: str) -> None:
+                self.id = uid
+                self.name = name
+                self.is_active = True
+                self.is_owner = False
+                self.system_generated = False
+
+        stubs: list[Any] = []
+        seen: set[str] = set()
+        for state in self.hass.states.async_all("person"):
+            uid = state.attributes.get("user_id")
+            if isinstance(uid, str) and uid and uid not in seen:
+                seen.add(uid)
+                stubs.append(
+                    _Stub(uid, state.attributes.get("friendly_name") or state.name or uid)
+                )
+        return stubs
+
+    async def _async_get_users(self) -> list[Any]:
+        result = self.hass.auth.async_get_users()
+        if inspect.isawaitable(result):
+            return list(await result)
+        return list(result)
+
+
     def list_users_for_panel(self) -> list[dict[str, Any]]:
         """Friendly-name-first user rows for the admin UI."""
         person_by_user: dict[str, str] = {}
@@ -140,7 +155,7 @@ class HassioGroupsRuntime:
                 person_by_user[uid] = state.attributes.get("friendly_name") or state.name
 
         rows: list[dict[str, Any]] = []
-        for user in _get_users_sync(self.hass):
+        for user in self._get_users_sync():
             if user.system_generated:
                 continue
             person_name = person_by_user.get(user.id)
@@ -163,7 +178,8 @@ class HassioGroupsRuntime:
         return [lookup.get(uid, uid) for uid in user_ids]
 
     async def async_prune_users(self) -> None:
-        valid = {u.id for u in await _async_get_users(self.hass)}
+        users = await self._async_get_users()
+        valid = {u.id for u in users}
         touched = await self.store.prune_missing_users(valid)
         if touched:
             _LOGGER.info("Pruned missing users from groups: %s", touched)
@@ -174,9 +190,12 @@ class HassioGroupsRuntime:
             return
         existing = set(self.sensors)
         current = set(self.store.groups)
-        # Update
+        # Update (skip sensors not yet attached to hass)
         for gid in existing & current:
-            self.sensors[gid].apply_group(self.store.groups[gid])
+            sensor = self.sensors[gid]
+            if getattr(sensor, "hass", None) is None:
+                continue
+            sensor.apply_group(self.store.groups[gid])
         # Add
         to_add = []
         for gid in current - existing:
