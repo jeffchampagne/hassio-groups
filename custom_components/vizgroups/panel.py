@@ -60,14 +60,31 @@ class _NoRuntime(RuntimeError):
 
 
 async def async_register_panel(hass: HomeAssistant) -> None:
-    """Serve the Lit panel module and add the sidebar entry once."""
+    """Serve the Lit panel module and (re)add the sidebar entry.
+
+    Re-registers when ``PANEL_MODULE_URL`` changes so cache-bust query
+    strings (e.g. ``?v=crumb13``) take effect without a Core restart.
+    """
     bucket = hass.data.setdefault(DOMAIN, {})
-    if bucket.get("panel"):
-        return
-    module = Path(__file__).parent / "frontend" / "panel.js"
+    frontend_dir = Path(__file__).parent / "frontend"
+    static_url = PANEL_MODULE_URL.split("?", 1)[0]
+    module_name = Path(static_url).name or "panel.js"
+    module = frontend_dir / module_name
+    if not module.is_file():
+        module = frontend_dir / "panel.js"
     await hass.http.async_register_static_paths(
-        [StaticPathConfig(PANEL_MODULE_URL, str(module), False)]
+        [StaticPathConfig(static_url, str(module), False)]
     )
+    prev = bucket.get("panel_module_url")
+    if bucket.get("panel") and prev == PANEL_MODULE_URL:
+        return
+    if bucket.get("panel"):
+        try:
+            from homeassistant.components import frontend
+
+            frontend.async_remove_panel(hass, PANEL_PATH)
+        except Exception:  # noqa: BLE001
+            pass
     await panel_custom.async_register_panel(
         hass,
         frontend_url_path=PANEL_PATH,
@@ -80,6 +97,7 @@ async def async_register_panel(hass: HomeAssistant) -> None:
         config={"domain": DOMAIN},
     )
     bucket["panel"] = True
+    bucket["panel_module_url"] = PANEL_MODULE_URL
 
 
 def async_register_websocket(hass: HomeAssistant) -> None:
@@ -129,6 +147,9 @@ def async_register_websocket(hass: HomeAssistant) -> None:
             value.hass, value.store, options=options
         )
     bucket["websocket"] = True
+    # Soft-reload path: old __init__ skips panel re-register; force cache-bust URL.
+    if bucket.get("panel_module_url") != PANEL_MODULE_URL:
+        hass.async_create_task(async_register_panel(hass))
 
 
 def _runtime(hass: HomeAssistant) -> Any:
@@ -141,43 +162,96 @@ def _runtime(hass: HomeAssistant) -> Any:
     raise _NoRuntime()
 
 
-def _binding_to_dict(binding: Any) -> dict[str, Any]:
+def _disk_binding_breadcrumbs(hass: HomeAssistant) -> dict[str, str]:
+    """Read breadcrumb strings from on-disk store (survives soft-reload class skew)."""
+    import json
+
+    try:
+        raw = Path(hass.config.path(f".storage/{DOMAIN}")).read_text(encoding="utf-8")
+        data = json.loads(raw)
+        out: dict[str, str] = {}
+        for item in (data.get("data") or data).get("bindings") or []:
+            bid = item.get("id")
+            crumb = str(item.get("breadcrumb") or "").strip()
+            if bid and crumb:
+                out[str(bid)] = crumb
+        return out
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def _binding_to_dict(
+    binding: Any, disk_crumbs: dict[str, str] | None = None
+) -> dict[str, Any]:
     """Serialize a binding, always including breadcrumb (soft-reload safe)."""
     data = binding.to_dict()
-    data["breadcrumb"] = str(
+    crumb = str(
         getattr(binding, "breadcrumb", None) or data.get("breadcrumb") or ""
-    )
+    ).strip()
+    if not crumb and disk_crumbs:
+        crumb = disk_crumbs.get(str(data.get("id") or getattr(binding, "id", "")), "")
+    data["breadcrumb"] = crumb
+    if crumb:
+        try:
+            binding.breadcrumb = crumb
+        except Exception:  # noqa: BLE001
+            pass
     return data
 
 
 async def _async_backfill_binding_breadcrumbs(runtime: Any) -> bool:
     """Fill binding.breadcrumb from Lovelace node paths; return True if saved."""
+    from pathlib import Path as _Path
+
     from .sync import list_visibility_nodes, locators_match
 
+    debug: list[str] = []
     by_dash: dict[str, list[Any]] = {}
     for binding in runtime.store.bindings.values():
         path = binding.dashboard_url_path or "lovelace"
         by_dash.setdefault(path, []).append(binding)
+        debug.append(
+            f"before {binding.label!r} crumb={getattr(binding, 'breadcrumb', None)!r} "
+            f"cls={type(binding).__module__}.{type(binding).__name__}"
+        )
 
     changed = False
     for path, bindings in by_dash.items():
         url_key: str | None = None if path in ("lovelace", "default") else path
         try:
             config = await runtime.sync_engine.async_get_lovelace_config(url_key)
-        except Exception:  # noqa: BLE001
+            debug.append(f"config ok path={path} keys={list(config)[:8]}")
+        except Exception as err:  # noqa: BLE001
+            debug.append(f"config FAIL path={path} err={err!r}")
             continue
         nodes = list_visibility_nodes(config)
+        debug.append(f"nodes={len(nodes)} sample={[n.get('breadcrumb') for n in nodes[:3]]}")
         for binding in bindings:
+            matched = False
             for node in nodes:
                 if not locators_match(binding.locator, node.get("locator")):
                     continue
                 crumb = str(node.get("breadcrumb") or "")
+                matched = True
                 if crumb and getattr(binding, "breadcrumb", "") != crumb:
                     binding.breadcrumb = crumb
                     changed = True
+                debug.append(f"match {binding.label!r} -> {crumb!r}")
                 break
+            if not matched:
+                debug.append(f"NO match {binding.label!r} loc={binding.locator}")
+    debug.append(f"changed={changed}")
+    try:
+        _Path("/config/vizgroups_crumb_debug.txt").write_text("\n".join(debug))
+    except Exception as err:  # noqa: BLE001
+        debug.append(f"writefail {err!r}")
     if changed:
         await runtime.store.async_save()
+        debug.append("saved")
+        try:
+            _Path("/config/vizgroups_crumb_debug.txt").write_text("\n".join(debug))
+        except Exception:  # noqa: BLE001
+            pass
     return changed
 
 
@@ -217,7 +291,10 @@ def panel_snapshot(hass: HomeAssistant) -> dict[str, Any]:
         )
     groups.sort(key=lambda g: g["name"].casefold())
 
-    bindings = [_binding_to_dict(b) for b in runtime.store.bindings.values()]
+    disk_crumbs = _disk_binding_breadcrumbs(hass)
+    bindings = [
+        _binding_to_dict(b, disk_crumbs) for b in runtime.store.bindings.values()
+    ]
     bindings.sort(
         key=lambda b: (b.get("dashboard_url_path") or "", b.get("label") or b["id"])
     )

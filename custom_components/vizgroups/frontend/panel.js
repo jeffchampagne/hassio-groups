@@ -891,9 +891,13 @@ class VizGroupsPanel extends LitElement {
   }
 
   async _enrichBindingBreadcrumbs() {
-    const bindings = this._bindings || [];
-    const missing = bindings.filter((b) => !b.breadcrumb);
-    if (!missing.length || !this.hass) return;
+    const bindings = this._data?.bindings || [];
+    const missing = bindings.filter((b) => !(b.breadcrumb && String(b.breadcrumb).trim()));
+    if (!this.hass) return;
+    if (!missing.length) {
+      this.requestUpdate();
+      return;
+    }
     const byDash = {};
     for (const b of missing) {
       const path = b.dashboard_url_path || "lovelace";
@@ -2375,7 +2379,8 @@ class VizGroupsPanel extends LitElement {
           : nothing}
         <div class="panel" style="border:0;border-top:1px solid var(--hg-divider);border-radius:0">
           <table>
-            <thead>
+            <p style="font-size:0.75rem;opacity:0.65;margin:0 0 8px">Showing view › section › path under each label (crumb13b)</p>
+          <thead>
               <tr>
                 <th>Element</th>
                 <th>Type</th>
@@ -2502,12 +2507,15 @@ class VizGroupsPanel extends LitElement {
               : this._bindings.map(
                   (b) => {
                     const label = b.label || b.id;
-                    const crumb = b.breadcrumb || "";
+                    const crumb =
+                      b.breadcrumb ||
+                      this._locatorSummary(b.locator, b.fingerprint, "") ||
+                      "";
                     return html`<tr class="row-click" @click=${() => this._openEditBinding(b)}>
                     <td>
                       <strong>${label}</strong>
                       ${crumb && crumb !== label
-                        ? html`<div style="font-size:0.8rem;color:var(--hg-text-secondary)">${crumb}</div>`
+                        ? html`<div class="muted" style="font-size:0.8rem;opacity:0.75;margin-top:2px">${crumb}</div>`
                         : nothing}
                     </td>
                     <td>${this._dashboardTitle(b.dashboard_url_path)}</td>

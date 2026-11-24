@@ -98,8 +98,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     from .panel import async_register_panel as _reg_panel
     from .panel import async_register_websocket as _reg_ws
     _reg_ws(hass)
-    if not hass.data[DOMAIN].get("panel"):
-        await _reg_panel(hass)
+    # Always invoke — re-registers when PANEL_MODULE_URL cache-busts.
+    await _reg_panel(hass)
 
     await runtime.async_prune_users()
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
