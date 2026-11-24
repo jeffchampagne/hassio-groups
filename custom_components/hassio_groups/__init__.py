@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import logging
 from typing import Any
 
@@ -40,6 +41,34 @@ from .store import GroupsStore
 _LOGGER = logging.getLogger(__name__)
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
+
+
+async def _async_get_users(hass: HomeAssistant) -> list[Any]:
+    """Return HA users; await when Core exposes async_get_users as a coroutine.
+
+    Older Core builds returned a list from the misnamed sync helper; HA 2026.11+
+    returns a real coroutine that must be awaited (else setup_error).
+    """
+    result = hass.auth.async_get_users()
+    if inspect.isawaitable(result):
+        return list(await result)
+    return list(result)
+
+
+def _get_users_sync(hass: HomeAssistant) -> list[Any]:
+    """Sync-safe user list for panel helpers.
+
+    When async_get_users is a coroutine function, do not call it from sync code —
+    read the already-loaded AuthStore map instead.
+    """
+    method = hass.auth.async_get_users
+    if inspect.iscoroutinefunction(method):
+        store = getattr(hass.auth, "_store", None)
+        users = getattr(store, "_users", None) if store is not None else None
+        if isinstance(users, dict):
+            return list(users.values())
+        return []
+    return list(method())
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
@@ -111,7 +140,7 @@ class HassioGroupsRuntime:
                 person_by_user[uid] = state.attributes.get("friendly_name") or state.name
 
         rows: list[dict[str, Any]] = []
-        for user in self.hass.auth.async_get_users():
+        for user in _get_users_sync(self.hass):
             if user.system_generated:
                 continue
             person_name = person_by_user.get(user.id)
@@ -134,7 +163,7 @@ class HassioGroupsRuntime:
         return [lookup.get(uid, uid) for uid in user_ids]
 
     async def async_prune_users(self) -> None:
-        valid = {u.id for u in self.hass.auth.async_get_users()}
+        valid = {u.id for u in await _async_get_users(self.hass)}
         touched = await self.store.prune_missing_users(valid)
         if touched:
             _LOGGER.info("Pruned missing users from groups: %s", touched)
