@@ -201,58 +201,34 @@ def _binding_to_dict(
 
 async def _async_backfill_binding_breadcrumbs(runtime: Any) -> bool:
     """Fill binding.breadcrumb from Lovelace node paths; return True if saved."""
-    from pathlib import Path as _Path
-
     from .sync import list_visibility_nodes, locators_match
 
-    debug: list[str] = []
     by_dash: dict[str, list[Any]] = {}
     for binding in runtime.store.bindings.values():
         path = binding.dashboard_url_path or "lovelace"
         by_dash.setdefault(path, []).append(binding)
-        debug.append(
-            f"before {binding.label!r} crumb={getattr(binding, 'breadcrumb', None)!r} "
-            f"cls={type(binding).__module__}.{type(binding).__name__}"
-        )
 
     changed = False
     for path, bindings in by_dash.items():
         url_key: str | None = None if path in ("lovelace", "default") else path
         try:
             config = await runtime.sync_engine.async_get_lovelace_config(url_key)
-            debug.append(f"config ok path={path} keys={list(config)[:8]}")
-        except Exception as err:  # noqa: BLE001
-            debug.append(f"config FAIL path={path} err={err!r}")
+        except Exception:  # noqa: BLE001
             continue
         nodes = list_visibility_nodes(config)
-        debug.append(f"nodes={len(nodes)} sample={[n.get('breadcrumb') for n in nodes[:3]]}")
         for binding in bindings:
-            matched = False
             for node in nodes:
                 if not locators_match(binding.locator, node.get("locator")):
                     continue
                 crumb = str(node.get("breadcrumb") or "")
-                matched = True
                 if crumb and getattr(binding, "breadcrumb", "") != crumb:
                     binding.breadcrumb = crumb
                     changed = True
-                debug.append(f"match {binding.label!r} -> {crumb!r}")
                 break
-            if not matched:
-                debug.append(f"NO match {binding.label!r} loc={binding.locator}")
-    debug.append(f"changed={changed}")
-    try:
-        _Path("/config/vizgroups_crumb_debug.txt").write_text("\n".join(debug))
-    except Exception as err:  # noqa: BLE001
-        debug.append(f"writefail {err!r}")
     if changed:
         await runtime.store.async_save()
-        debug.append("saved")
-        try:
-            _Path("/config/vizgroups_crumb_debug.txt").write_text("\n".join(debug))
-        except Exception:  # noqa: BLE001
-            pass
     return changed
+
 
 
 def panel_snapshot(hass: HomeAssistant) -> dict[str, Any]:

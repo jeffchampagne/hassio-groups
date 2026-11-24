@@ -184,6 +184,42 @@ class LovelaceSyncEngine:
                     )
         except Exception:  # noqa: BLE001
             pass
+
+        # Registry is the source of truth for storage dashboards (Overview + user).
+        # HA's in-memory dashboards map sometimes omits the default Overview.
+        try:
+            reg_path = self.hass.config.path(".storage/lovelace_dashboards")
+            with open(reg_path, encoding="utf-8") as handle:
+                reg = json.load(handle)
+            for item in ((reg.get("data") or {}).get("items") or []):
+                if not isinstance(item, dict):
+                    continue
+                url = item.get("url_path") or item.get("id")
+                if not url:
+                    continue
+                url = "lovelace" if url in ("default",) else str(url)
+                if url in seen:
+                    # Refresh title/mode from registry when richer.
+                    for row in items:
+                        if row["url_path"] != url:
+                            continue
+                        if item.get("title"):
+                            row["title"] = str(item["title"])
+                        if item.get("mode"):
+                            row["mode"] = str(item["mode"])
+                        break
+                    continue
+                seen.add(url)
+                items.append(
+                    {
+                        "url_path": url,
+                        "title": str(item.get("title") or url),
+                        "mode": str(item.get("mode") or "storage"),
+                    }
+                )
+        except Exception:  # noqa: BLE001
+            pass
+
         items.sort(key=lambda d: (d["url_path"] != "lovelace", d["title"].casefold()))
         return items
 
@@ -245,15 +281,22 @@ class LovelaceSyncEngine:
 
 
     def _storage_key_candidates(self, url_path: str | None) -> list[str]:
-        """Possible .storage keys for a dashboard url_path."""
-        if url_path in (None, "", "lovelace", "default"):
-            return ["lovelace"]
-        path = str(url_path)
+        """Possible .storage keys for a dashboard url_path.
+
+        Overview is stored as ``lovelace.lovelace`` on modern HA (not bare
+        ``lovelace``). Custom dashboards use ``lovelace.<id>``.
+        """
+        is_overview = url_path in (None, "", "lovelace", "default")
+        path = "lovelace" if is_overview else str(url_path)
         underscored = path.replace("-", "_")
-        keys = [f"lovelace.{underscored}"]
-        if underscored != path:
-            keys.append(f"lovelace.{path}")
-        # Also try registry id from lovelace_dashboards if present
+        keys: list[str] = []
+        if is_overview:
+            keys.extend(["lovelace.lovelace", "lovelace"])
+        else:
+            keys.append(f"lovelace.{underscored}")
+            if underscored != path:
+                keys.append(f"lovelace.{path}")
+        # Prefer registry id from lovelace_dashboards when present
         try:
             reg_path = self.hass.config.path(".storage/lovelace_dashboards")
             with open(reg_path, encoding="utf-8") as handle:
@@ -261,7 +304,11 @@ class LovelaceSyncEngine:
             for item in ((reg.get("data") or {}).get("items") or []):
                 if not isinstance(item, dict):
                     continue
-                if item.get("url_path") == path or item.get("id") == underscored:
+                if (
+                    item.get("url_path") == path
+                    or item.get("id") == underscored
+                    or item.get("id") == path
+                ):
                     dash_id = item.get("id")
                     if dash_id:
                         key = f"lovelace.{dash_id}"
@@ -269,7 +316,11 @@ class LovelaceSyncEngine:
                             keys.insert(0, key)
         except Exception:  # noqa: BLE001
             pass
-        return keys
+        out: list[str] = []
+        for key in keys:
+            if key not in out:
+                out.append(key)
+        return out
 
     def _load_storage_file_config(self, url_path: str | None) -> dict[str, Any] | None:
         """Load Lovelace config from .storage JSON when async_load fails."""
