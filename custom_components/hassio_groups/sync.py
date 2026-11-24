@@ -197,6 +197,46 @@ def apply_binding_to_config(
     return working, "ok"
 
 
+def _node_label(node: dict[str, Any], *, fallback: str) -> str:
+    """Human-readable label: title/name/entity/type."""
+    for key in ("title", "name"):
+        val = node.get(key)
+        if isinstance(val, str) and val.strip():
+            return val.strip()
+    entity = node.get("entity")
+    if isinstance(entity, str) and entity.strip():
+        return entity.strip()
+    entities = node.get("entities")
+    if isinstance(entities, list) and entities:
+        first = entities[0]
+        if isinstance(first, str) and first.strip():
+            return first.strip()
+        if isinstance(first, dict) and first.get("entity"):
+            return str(first.get("entity"))
+    ntype = node.get("type")
+    if isinstance(ntype, str) and ntype.strip():
+        return ntype.strip()
+    return fallback
+
+
+def _node_detail(node: dict[str, Any]) -> str:
+    """Secondary line: type · entity."""
+    bits: list[str] = []
+    ntype = node.get("type")
+    if isinstance(ntype, str) and ntype.strip():
+        bits.append(ntype.strip())
+    entity = node.get("entity")
+    if isinstance(entity, str) and entity.strip():
+        bits.append(entity.strip())
+    elif isinstance(node.get("entities"), list) and node["entities"]:
+        first = node["entities"][0]
+        if isinstance(first, str):
+            bits.append(first)
+        elif isinstance(first, dict) and first.get("entity"):
+            bits.append(str(first.get("entity")))
+    return " · ".join(bits)
+
+
 def list_visibility_nodes(config: dict[str, Any]) -> list[dict[str, Any]]:
     """Enumerate visibility-capable nodes with locator hints (for UI browser)."""
     results: list[dict[str, Any]] = []
@@ -208,10 +248,14 @@ def list_visibility_nodes(config: dict[str, Any]) -> list[dict[str, Any]]:
         if not isinstance(view, dict):
             continue
         view_path = view.get("path")
+        view_label = _node_label(view, fallback=str(view_path or f"View {v_idx}"))
         results.append(
             {
                 "kind": "view",
-                "label": str(view.get("title") or view_path or f"View {v_idx}"),
+                "label": view_label,
+                "detail": _node_detail(view) or f"view #{v_idx}",
+                "breadcrumb": view_label,
+                "type": view.get("type") or "view",
                 "locator": {
                     "kind": "view",
                     "view_index": v_idx,
@@ -226,10 +270,14 @@ def list_visibility_nodes(config: dict[str, Any]) -> list[dict[str, Any]]:
             for s_idx, section in enumerate(sections):
                 if not isinstance(section, dict):
                     continue
+                section_label = _node_label(section, fallback=f"Section {s_idx}")
                 results.append(
                     {
                         "kind": "section",
-                        "label": str(section.get("title") or f"Section {s_idx}"),
+                        "label": section_label,
+                        "detail": _node_detail(section) or f"section #{s_idx}",
+                        "breadcrumb": f"{view_label} › {section_label}",
+                        "type": section.get("type") or "section",
                         "locator": {
                             "kind": "section",
                             "view_index": v_idx,
@@ -245,16 +293,14 @@ def list_visibility_nodes(config: dict[str, Any]) -> list[dict[str, Any]]:
                     for c_idx, card in enumerate(cards):
                         if not isinstance(card, dict):
                             continue
+                        card_label = _node_label(card, fallback=f"Card {c_idx}")
                         results.append(
                             {
                                 "kind": "card",
-                                "label": str(
-                                    card.get("title")
-                                    or card.get("name")
-                                    or card.get("entity")
-                                    or card.get("type")
-                                    or f"Card {c_idx}"
-                                ),
+                                "label": card_label,
+                                "detail": _node_detail(card) or f"card #{c_idx}",
+                                "breadcrumb": f"{view_label} › {section_label} › {card_label}",
+                                "type": card.get("type") or "card",
                                 "locator": {
                                     "kind": "card",
                                     "view_index": v_idx,
@@ -271,16 +317,14 @@ def list_visibility_nodes(config: dict[str, Any]) -> list[dict[str, Any]]:
             for c_idx, card in enumerate(cards):
                 if not isinstance(card, dict):
                     continue
+                card_label = _node_label(card, fallback=f"Card {c_idx}")
                 results.append(
                     {
                         "kind": "card",
-                        "label": str(
-                            card.get("title")
-                            or card.get("name")
-                            or card.get("entity")
-                            or card.get("type")
-                            or f"Card {c_idx}"
-                        ),
+                        "label": card_label,
+                        "detail": _node_detail(card) or f"card #{c_idx}",
+                        "breadcrumb": f"{view_label} › {card_label}",
+                        "type": card.get("type") or "card",
                         "locator": {
                             "kind": "card",
                             "view_index": v_idx,

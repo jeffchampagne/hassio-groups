@@ -70,6 +70,38 @@ class GroupsStore:
         await self.async_save()
         return group
 
+    async def rename_group(self, old_id: str, new_id: str) -> Group:
+        """Rename a group id and rewrite binding include/exclude refs."""
+        old_id = (old_id or "").strip()
+        new_id = (new_id or "").strip()
+        if not old_id or not new_id:
+            raise ValueError("Both old and new group ids are required")
+        if old_id == new_id:
+            group = self.get_group(old_id)
+            if not group:
+                raise ValueError(f"Unknown group {old_id}")
+            return group
+        group = self.groups.pop(old_id, None)
+        if group is None:
+            raise ValueError(f"Unknown group {old_id}")
+        if new_id in self.groups:
+            # put it back so we don't lose data on conflict
+            self.groups[old_id] = group
+            raise ValueError(f"Group id already exists: {new_id}")
+        group.id = new_id
+        group.updated = utcnow_iso()
+        self.groups[new_id] = group
+        for binding in self.bindings.values():
+            binding.expression.include = [
+                new_id if g == old_id else g for g in binding.expression.include
+            ]
+            binding.expression.exclude = [
+                new_id if g == old_id else g for g in binding.expression.exclude
+            ]
+            binding.updated = utcnow_iso()
+        await self.async_save()
+        return group
+
     async def delete_group(self, group_id: str) -> None:
         self.groups.pop(group_id, None)
         # Drop bindings that referenced the deleted group

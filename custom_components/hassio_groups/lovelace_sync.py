@@ -78,6 +78,83 @@ class LovelaceSyncEngine:
             raise HomeAssistantError("Lovelace dashboards API unavailable")
         return dashboards
 
+
+    def list_dashboards(self) -> list[dict[str, Any]]:
+        """Enumerate dashboards for the panel browser (url_path + title)."""
+        items: list[dict[str, Any]] = [
+            {"url_path": "lovelace", "title": "Overview", "mode": "storage"}
+        ]
+        seen = {"lovelace", "default"}
+        try:
+            dashboards = self._dashboards()
+        except Exception:  # noqa: BLE001
+            return items
+
+        def _add(path: str | None, dash: Any) -> None:
+            url = "lovelace" if path in (None, "", "default") else str(path)
+            if url in seen:
+                # Prefer richer title if we already have the stub Overview entry
+                if url == "lovelace" and items:
+                    cfg = getattr(dash, "config", None) or {}
+                    title = (
+                        getattr(dash, "title", None)
+                        or (cfg.get("title") if isinstance(cfg, dict) else None)
+                    )
+                    if title:
+                        items[0]["title"] = str(title)
+                    mode = _mode_str(getattr(dash, "mode", None))
+                    if mode:
+                        items[0]["mode"] = mode
+                return
+            seen.add(url)
+            cfg = getattr(dash, "config", None) or {}
+            title = (
+                getattr(dash, "title", None)
+                or (cfg.get("title") if isinstance(cfg, dict) else None)
+                or url
+            )
+            items.append(
+                {
+                    "url_path": url,
+                    "title": str(title),
+                    "mode": _mode_str(getattr(dash, "mode", None)) or "storage",
+                }
+            )
+
+        # Mapping / collection styles across HA versions
+        if hasattr(dashboards, "items"):
+            try:
+                for key, dash in list(dashboards.items()):
+                    _add(key, dash)
+            except Exception:  # noqa: BLE001
+                pass
+        elif isinstance(dashboards, dict):
+            for key, dash in dashboards.items():
+                _add(key, dash)
+
+        # YAML dashboards registered in configuration.yaml (in case not yet in API)
+        try:
+            from homeassistant.config import load_yaml_config_file
+
+            conf = load_yaml_config_file(self.hass.config.path("configuration.yaml"))
+            registered = (conf.get("lovelace") or {}).get("dashboards") or {}
+            if isinstance(registered, dict):
+                for key, cfg in registered.items():
+                    if key in seen:
+                        continue
+                    seen.add(str(key))
+                    items.append(
+                        {
+                            "url_path": str(key),
+                            "title": str((cfg or {}).get("title") or key),
+                            "mode": str((cfg or {}).get("mode") or "yaml"),
+                        }
+                    )
+        except Exception:  # noqa: BLE001
+            pass
+        items.sort(key=lambda d: (d["url_path"] != "lovelace", d["title"].casefold()))
+        return items
+
     def _get_dashboard(self, url_path: str | None) -> Any:
         dashboards = self._dashboards()
         try:
@@ -160,7 +237,6 @@ class LovelaceSyncEngine:
                     )
 
             await self.hass.async_add_executor_job(_write)
-            # Drop stale YAML cache so the next load sees our write.
             if hasattr(dashboard, "_cache"):
                 dashboard._cache = None  # noqa: SLF001
             if self.hass.services.has_service("lovelace", "reload"):

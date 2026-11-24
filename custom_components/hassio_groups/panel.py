@@ -119,10 +119,17 @@ def panel_snapshot(hass: HomeAssistant) -> dict[str, Any]:
         key=lambda b: (b.get("dashboard_url_path") or "", b.get("label") or b["id"])
     )
 
+    dashboards: list[dict[str, Any]] = []
+    try:
+        dashboards = runtime.sync_engine.list_dashboards()
+    except Exception:  # noqa: BLE001
+        dashboards = [{"url_path": "lovelace", "title": "Overview", "mode": "storage"}]
+
     return {
         "groups": groups,
         "bindings": bindings,
         "users": users,
+        "dashboards": dashboards,
         "sync": runtime.store.sync_meta.to_dict(),
         "options": dict(runtime.entry.options) if runtime.entry else {},
     }
@@ -167,6 +174,7 @@ async def ws_list_users(
         vol.Required("type"): f"{DOMAIN}/save_group",
         vol.Required("name"): str,
         vol.Optional("group_id"): str,
+        vol.Optional("previous_group_id"): str,
         vol.Optional("description"): str,
         vol.Optional("icon"): str,
         vol.Optional("member_user_ids"): [str],
@@ -181,8 +189,14 @@ async def ws_save_group(
 ) -> None:
     runtime = _runtime(hass)
     group_id = (msg.get("group_id") or "").strip() or None
-    existing = runtime.store.get_group(group_id) if group_id else None
-    if existing:
+    previous_id = (msg.get("previous_group_id") or "").strip() or None
+    # Rename when editing an existing group to a new id.
+    if previous_id and group_id and previous_id != group_id:
+        try:
+            existing = await runtime.store.rename_group(previous_id, group_id)
+        except ValueError as err:
+            connection.send_error(msg["id"], "rename_failed", str(err))
+            return
         existing.name = msg["name"].strip()
         existing.description = (msg.get("description") or "").strip()
         existing.icon = (
@@ -193,19 +207,32 @@ async def ws_save_group(
         existing.updated = utcnow_iso()
         await runtime.store.upsert_group(existing)
     else:
-        group = new_group(
-            name=msg["name"].strip(),
-            group_id=group_id,
-            description=(msg.get("description") or "").strip(),
-            icon=(msg.get("icon") or "mdi:account-group").strip(),
-            member_user_ids=list(msg.get("member_user_ids") or []),
-        )
-        if runtime.store.get_group(group.id):
-            connection.send_error(
-                msg["id"], "exists", f"Group {group.id} already exists"
+        lookup_id = previous_id or group_id
+        existing = runtime.store.get_group(lookup_id) if lookup_id else None
+        if existing:
+            existing.name = msg["name"].strip()
+            existing.description = (msg.get("description") or "").strip()
+            existing.icon = (
+                msg.get("icon") or existing.icon or "mdi:account-group"
+            ).strip()
+            if "member_user_ids" in msg:
+                existing.member_user_ids = list(msg.get("member_user_ids") or [])
+            existing.updated = utcnow_iso()
+            await runtime.store.upsert_group(existing)
+        else:
+            group = new_group(
+                name=msg["name"].strip(),
+                group_id=group_id,
+                description=(msg.get("description") or "").strip(),
+                icon=(msg.get("icon") or "mdi:account-group").strip(),
+                member_user_ids=list(msg.get("member_user_ids") or []),
             )
-            return
-        await runtime.store.upsert_group(group)
+            if runtime.store.get_group(group.id):
+                connection.send_error(
+                    msg["id"], "exists", f"Group {group.id} already exists"
+                )
+                return
+            await runtime.store.upsert_group(group)
     await runtime.async_refresh_sensors()
     await runtime.async_maybe_autosync()
     connection.send_result(msg["id"], panel_snapshot(hass))
