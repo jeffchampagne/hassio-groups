@@ -8,6 +8,7 @@
 - **Storage:** Home Assistant `.storage/vizgroups` (covered by built-in HA Backup)
 - **Sensors:** `sensor.vizgroups_<group_id>` per group
 - **Visibility model:** rewrite managed `condition: user` leaves only; empty membership **fail-closes** with `users: []`
+- **Nested groups:** a group may include other groups as members; sync/sensors use cycle-safe flatten (cyclic edges skipped)
 - **Multi-group:** **AND** include ∩ **NOT** exclude
 - **Important:** Visibility is **UX, not an ACL**. Hiding a card does not block service calls via the API.
 
@@ -75,10 +76,13 @@ For Manual Dashboard Config rows, **Convert** creates a Viz Groups binding (pres
 
 Effective users for a binding:
 
-1. Intersection of all **include** group members (AND). Empty include → empty set (**fail closed**).
-2. Subtract union of all **exclude** group members (NOT).
-3. Dedupe + stable sort.
-4. Write `{"condition":"user","users":[...]}` — including `users: []` when empty so the element stays hidden.
+1. Flatten each group’s members (HA users + nested groups). **Cycles:** skip the cyclic edge; missing nested groups contribute nothing.
+2. Intersection of all **include** group effective users (AND). Empty include → empty set (**fail closed**).
+3. Subtract union of all **exclude** group effective users (NOT).
+4. Dedupe + stable sort.
+5. Write `{"condition":"user","users":[...]}` — including `users: []` when empty so the element stays hidden.
+
+Storage members are typed: `{"type":"user"|"group","id":"..."}` (legacy `member_user_ids` still loads).
 
 ### Conditionals & OR trees
 

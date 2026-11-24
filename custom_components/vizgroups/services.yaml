@@ -20,8 +20,20 @@ create_group:
       selector:
         icon:
     member_user_ids:
-      name: Members
-      description: Home Assistant user IDs.
+      name: User members
+      description: Home Assistant user IDs (direct members).
+      selector:
+        object:
+    member_group_ids:
+      name: Nested groups
+      description: Viz Groups ids nested as members.
+      selector:
+        object:
+    members:
+      name: Typed members
+      description: >-
+        Preferred membership list. Each item is
+        {"type":"user"|"group","id":"..."}.
       selector:
         object:
 
@@ -42,6 +54,12 @@ update_group:
       selector:
         icon:
     member_user_ids:
+      selector:
+        object:
+    member_group_ids:
+      selector:
+        object:
+    members:
       selector:
         object:
 

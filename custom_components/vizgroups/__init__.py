@@ -292,6 +292,8 @@ class GroupsRuntime:
                 description=data.get("description") or "",
                 icon=data.get("icon") or "mdi:account-group",
                 member_user_ids=list(data.get("member_user_ids") or []),
+                member_group_ids=list(data.get("member_group_ids") or []),
+                members=data.get("members"),
             )
             if self.store.get_group(group.id):
                 raise ValueError(f"Group {group.id} already exists")
@@ -312,8 +314,19 @@ class GroupsRuntime:
                 group.description = call.data["description"]
             if "icon" in call.data:
                 group.icon = call.data["icon"]
-            if "member_user_ids" in call.data:
-                group.member_user_ids = list(call.data["member_user_ids"] or [])
+            if any(
+                k in call.data for k in ("members", "member_user_ids", "member_group_ids")
+            ):
+                self.store.apply_members_payload(
+                    group,
+                    members=call.data.get("members") if "members" in call.data else None,
+                    member_user_ids=call.data.get("member_user_ids")
+                    if "member_user_ids" in call.data
+                    else None,
+                    member_group_ids=call.data.get("member_group_ids")
+                    if "member_group_ids" in call.data
+                    else None,
+                )
             group.updated = utcnow_iso()
             await self.store.upsert_group(group)
             await self.async_refresh_sensors()
@@ -442,11 +455,12 @@ class GroupsRuntime:
             if not group:
                 raise ValueError("Unknown group")
             uid = call.data[ATTR_USER_ID]
+            effective = self.store.members_by_group().get(group.id, [])
             return {
                 ATTR_GROUP_ID: group.id,
                 ATTR_USER_ID: uid,
-                ATTR_IS_MEMBER: is_member(uid, group.member_user_ids),
-                ATTR_MEMBERS: list(group.member_user_ids),
+                ATTR_IS_MEMBER: is_member(uid, effective),
+                ATTR_MEMBERS: list(effective),
             }
 
         schemas = {
@@ -459,6 +473,10 @@ class GroupsRuntime:
                     vol.Optional("member_user_ids", default=[]): vol.All(
                         cv.ensure_list, [cv.string]
                     ),
+                    vol.Optional("member_group_ids", default=[]): vol.All(
+                        cv.ensure_list, [cv.string]
+                    ),
+                    vol.Optional("members"): vol.All(cv.ensure_list, [dict]),
                 }
             ),
             "update_group": vol.Schema(
@@ -470,6 +488,10 @@ class GroupsRuntime:
                     vol.Optional("member_user_ids"): vol.All(
                         cv.ensure_list, [cv.string]
                     ),
+                    vol.Optional("member_group_ids"): vol.All(
+                        cv.ensure_list, [cv.string]
+                    ),
+                    vol.Optional("members"): vol.All(cv.ensure_list, [dict]),
                 }
             ),
             "delete_group": vol.Schema({vol.Required("group_id"): cv.string}),
