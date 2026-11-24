@@ -9,6 +9,12 @@ from typing import Any
 from uuid import uuid4
 
 from .const import LOCATOR_KINDS, MERGE_ENSURE_USER_BRANCH, MERGE_MODES
+from .membership import (
+    MEMBER_TYPE_GROUP,
+    MEMBER_TYPE_USER,
+    members_from_legacy,
+    normalize_members,
+)
 
 
 def utcnow_iso() -> str:
@@ -35,16 +41,67 @@ def _slugify(value: str) -> str:
 
 
 @dataclass
+class MemberRef:
+    """Typed group member: HA user or nested group."""
+
+    type: str
+    id: str
+
+    def to_dict(self) -> dict[str, str]:
+        return {"type": self.type, "id": self.id}
+
+    @classmethod
+    def from_dict(cls, data: Any) -> MemberRef | None:
+        from .membership import coerce_member
+
+        parsed = coerce_member(data)
+        if parsed is None:
+            return None
+        return cls(type=parsed["type"], id=parsed["id"])
+
+    @classmethod
+    def user(cls, user_id: str) -> MemberRef:
+        return cls(type=MEMBER_TYPE_USER, id=str(user_id))
+
+    @classmethod
+    def group(cls, group_id: str) -> MemberRef:
+        return cls(type=MEMBER_TYPE_GROUP, id=str(group_id))
+
+
+@dataclass
 class Group:
-    """A named set of Home Assistant user IDs."""
+    """A named set of HA users and/or nested Viz Groups."""
 
     id: str
     name: str
-    member_user_ids: list[str] = field(default_factory=list)
+    members: list[MemberRef] = field(default_factory=list)
     description: str = ""
     icon: str = "mdi:account-group"
     created: str = field(default_factory=_utcnow_iso)
     updated: str = field(default_factory=_utcnow_iso)
+
+    @property
+    def member_user_ids(self) -> list[str]:
+        """Direct HA user members (not nested groups)."""
+        return [m.id for m in self.members if m.type == MEMBER_TYPE_USER]
+
+    @member_user_ids.setter
+    def member_user_ids(self, user_ids: list[str]) -> None:
+        """Replace direct users; preserve nested group members."""
+        nested = [m for m in self.members if m.type == MEMBER_TYPE_GROUP]
+        users = [
+            MemberRef.user(str(uid))
+            for uid in (user_ids or [])
+            if uid and str(uid).strip()
+        ]
+        self.members = _member_refs_from_dicts(
+            normalize_members([*users, *nested])
+        )
+
+    @property
+    def member_group_ids(self) -> list[str]:
+        """Direct nested group members."""
+        return [m.id for m in self.members if m.type == MEMBER_TYPE_GROUP]
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -52,23 +109,35 @@ class Group:
             "name": self.name,
             "description": self.description,
             "icon": self.icon,
+            "members": [m.to_dict() for m in self.members],
+            # Legacy / convenience fields (direct membership only).
             "member_user_ids": list(self.member_user_ids),
+            "member_group_ids": list(self.member_group_ids),
             "created": self.created,
             "updated": self.updated,
         }
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Group:
-        members = data.get("member_user_ids") or []
+        raw_members = data.get("members")
+        refs = members_from_legacy(
+            members=raw_members if raw_members is not None else None,
+            member_user_ids_list=data.get("member_user_ids"),
+            member_group_ids_list=data.get("member_group_ids"),
+        )
         return cls(
             id=str(data["id"]),
             name=str(data.get("name") or data["id"]),
             description=str(data.get("description") or ""),
             icon=str(data.get("icon") or "mdi:account-group"),
-            member_user_ids=[str(uid) for uid in members if uid],
+            members=_member_refs_from_dicts(refs),
             created=str(data.get("created") or _utcnow_iso()),
             updated=str(data.get("updated") or _utcnow_iso()),
         )
+
+
+def _member_refs_from_dicts(refs: list[dict[str, str]]) -> list[MemberRef]:
+    return [MemberRef(type=r["type"], id=r["id"]) for r in refs]
 
 
 @dataclass
@@ -220,16 +289,23 @@ def new_group(
     description: str = "",
     icon: str = "mdi:account-group",
     member_user_ids: list[str] | None = None,
+    member_group_ids: list[str] | None = None,
+    members: list[Any] | None = None,
 ) -> Group:
     """Create a new group with a stable slug id."""
     gid = group_id or _slugify(name)
     now = _utcnow_iso()
+    refs = members_from_legacy(
+        members=members,
+        member_user_ids_list=member_user_ids,
+        member_group_ids_list=member_group_ids,
+    )
     return Group(
         id=gid,
         name=name,
         description=description,
         icon=icon,
-        member_user_ids=list(member_user_ids or []),
+        members=_member_refs_from_dicts(refs),
         created=now,
         updated=now,
     )

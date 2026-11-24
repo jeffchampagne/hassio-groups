@@ -30,7 +30,7 @@ async def async_setup_entry(
 
 
 class GroupMembershipSensor(SensorEntity):
-    """Expose member count + members attribute for automations."""
+    """Expose effective member count + members attribute for automations."""
 
     _attr_has_entity_name = True
     _attr_icon = "mdi:account-group"
@@ -40,9 +40,12 @@ class GroupMembershipSensor(SensorEntity):
         self._group = group
         self._attr_unique_id = f"{DOMAIN}_{group.id}"
         self._attr_name = group.name
-        self._attr_native_value = len(group.member_user_ids)
+        self._attr_native_value = len(self._effective_user_ids())
         # Deterministic entity_id: sensor.vizgroups_<group_id>
         self.entity_id = f"sensor.{DOMAIN}_{group.id}"
+
+    def _effective_user_ids(self) -> list[str]:
+        return self._runtime.store.members_by_group().get(self._group.id, [])
 
     @property
     def group_id(self) -> str:
@@ -50,11 +53,15 @@ class GroupMembershipSensor(SensorEntity):
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
-        names = self._runtime.display_names_for(self._group.member_user_ids)
+        effective = self._effective_user_ids()
+        names = self._runtime.display_names_for(effective)
         return {
             ATTR_GROUP_ID: self._group.id,
-            ATTR_MEMBERS: list(self._group.member_user_ids),
+            ATTR_MEMBERS: list(effective),
             ATTR_MEMBER_NAMES: names,
+            "member_user_ids": list(self._group.member_user_ids),
+            "member_group_ids": list(self._group.member_group_ids),
+            "members_typed": [m.to_dict() for m in self._group.members],
             "description": self._group.description,
             "icon": self._group.icon,
         }
@@ -63,6 +70,6 @@ class GroupMembershipSensor(SensorEntity):
     def apply_group(self, group: Group) -> None:
         self._group = group
         self._attr_name = group.name
-        self._attr_native_value = len(group.member_user_ids)
+        self._attr_native_value = len(self._effective_user_ids())
         self._attr_icon = group.icon or "mdi:account-group"
         self.async_write_ha_state()
