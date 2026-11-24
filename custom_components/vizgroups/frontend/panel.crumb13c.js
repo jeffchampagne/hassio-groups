@@ -153,6 +153,7 @@ class VizGroupsPanel extends LitElement {
     _auditBusy: { state: true },
     _auditReport: { state: true },
     _auditExpanded: { state: true },
+    _refreshAuditAfterSave: { state: true },
     _clipStatus: { state: true },
     _pasteOpen: { state: true },
     _pasteDraft: { state: true },
@@ -787,6 +788,7 @@ class VizGroupsPanel extends LitElement {
     this._auditBusy = false;
     this._auditReport = null;
     this._auditExpanded = {};
+    this._refreshAuditAfterSave = false;
     this._clipStatus = "";
     this._clipStatusTimer = null;
     this._pasteOpen = false;
@@ -1690,6 +1692,7 @@ class VizGroupsPanel extends LitElement {
     this._pickerStep = "groups";
     this._view = "bindings";
     this._error = "";
+    this._refreshAuditAfterSave = true;
     this.updateComplete.then(() => {
       const el = this.renderRoot?.querySelector?.(".binding-form");
       el?.scrollIntoView?.({ behavior: "smooth", block: "start" });
@@ -1744,9 +1747,14 @@ class VizGroupsPanel extends LitElement {
       return;
     }
     const locator = this._normalizeLocator(d.locator || {});
+    const dashboard = d.dashboard_url_path || "lovelace";
+    const refreshAudit =
+      this._refreshAuditAfterSave
+      || (this._auditReport
+        && (this._auditReport.dashboard_url_path || this._auditDashboard || "lovelace") === dashboard);
     await this._call("save_binding", {
       binding_id: d.binding_id || undefined,
-      dashboard_url_path: d.dashboard_url_path,
+      dashboard_url_path: dashboard,
       include: d.include,
       exclude: d.exclude || [],
       locator,
@@ -1756,8 +1764,16 @@ class VizGroupsPanel extends LitElement {
       breadcrumb: d.breadcrumb || "",
     });
     this._bindingDraft = null;
+    this._refreshAuditAfterSave = false;
+    this._resetNodeBrowser?.();
+    this._pickerStep = "closed";
     // Re-sync so Lovelace visibility reflects the edit immediately.
     await this._sync(false);
+    // After Convert (or any save on the audited dashboard), refresh audit rows.
+    if (refreshAudit) {
+      this._auditDashboard = dashboard;
+      await this._runVisibilityAudit();
+    }
   }
 
   async _deleteBinding(id) {
@@ -2264,7 +2280,7 @@ class VizGroupsPanel extends LitElement {
           <button class="btn btn-ghost" type="button"
             @click=${() => (this._pickerStep = "preview")}>Select a different element</button>
           <button class="btn btn-ghost" type="button"
-            @click=${() => { this._bindingDraft = null; this._resetNodeBrowser(); }}>Cancel</button>
+            @click=${() => { this._bindingDraft = null; this._refreshAuditAfterSave = false; this._resetNodeBrowser(); }}>Cancel</button>
         </div>
       </div>
     `;
@@ -2312,7 +2328,7 @@ class VizGroupsPanel extends LitElement {
           </div>
           ${!inGroupsStep
             ? html`<div class="toolbar" style="margin-top:10px">
-                <button class="btn btn-ghost" @click=${() => { this._bindingDraft = null; this._resetNodeBrowser(); }}>Cancel</button>
+                <button class="btn btn-ghost" @click=${() => { this._bindingDraft = null; this._refreshAuditAfterSave = false; this._resetNodeBrowser(); }}>Cancel</button>
               </div>`
             : nothing}
         </div>

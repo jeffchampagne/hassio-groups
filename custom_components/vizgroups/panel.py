@@ -61,28 +61,37 @@ class _NoRuntime(RuntimeError):
 
 async def async_register_panel(hass: HomeAssistant) -> None:
     """Serve the Lit panel module and add the sidebar entry once."""
+    import logging
+
+    _log = logging.getLogger(__name__)
     bucket = hass.data.setdefault(DOMAIN, {})
     module = Path(__file__).parent / "frontend" / "panel.js"
     static_url = PANEL_MODULE_URL.split("?", 1)[0]
-    await hass.http.async_register_static_paths(
-        [StaticPathConfig(static_url, str(module), False)]
-    )
+    try:
+        await hass.http.async_register_static_paths(
+            [StaticPathConfig(static_url, str(module), False)]
+        )
+    except Exception as err:  # noqa: BLE001
+        # Path may already be registered after a soft reload.
+        _log.debug("Viz Groups static path register skipped: %s", err)
     if bucket.get("panel"):
-        # Update remembered module URL for cache-bust query changes; panel
-        # webcomponent stays registered (HA keeps the first module_url).
         bucket["panel_module_url"] = PANEL_MODULE_URL
         return
-    await panel_custom.async_register_panel(
-        hass,
-        frontend_url_path=PANEL_PATH,
-        webcomponent_name=PANEL_ELEMENT,
-        sidebar_title=NAME,
-        sidebar_icon=PANEL_ICON,
-        module_url=PANEL_MODULE_URL,
-        require_admin=True,
-        embed_iframe=False,
-        config={"domain": DOMAIN},
-    )
+    try:
+        await panel_custom.async_register_panel(
+            hass,
+            frontend_url_path=PANEL_PATH,
+            webcomponent_name=PANEL_ELEMENT,
+            sidebar_title=NAME,
+            sidebar_icon=PANEL_ICON,
+            module_url=PANEL_MODULE_URL,
+            require_admin=True,
+            embed_iframe=False,
+            config={"domain": DOMAIN},
+        )
+    except Exception as err:  # noqa: BLE001
+        _log.warning("Viz Groups panel register: %s", err)
+        # Still mark registered so setup_entry can proceed.
     bucket["panel"] = True
     bucket["panel_module_url"] = PANEL_MODULE_URL
 
