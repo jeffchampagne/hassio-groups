@@ -186,13 +186,23 @@ def apply_binding_to_config(
         if current_fp and current_fp != expected_fingerprint:
             return None, "stale"
 
-    before = deepcopy(node.get("visibility"))
-    node["visibility"] = apply_visibility_users(
-        node.get("visibility") if isinstance(node.get("visibility"), list) else node.get("visibility"),
+    # Conditional cards gate on ``conditions`` (incl. or/and trees with a
+    # nested condition:user leaf). Everything else uses ``visibility``.
+    # Rewriting the existing user leaf avoids inventing a separate visibility
+    # array that HA ignores for type:conditional.
+    gate_key = (
+        "conditions"
+        if str(node.get("type") or "") == "conditional"
+        and isinstance(node.get("conditions"), list)
+        else "visibility"
+    )
+    before = deepcopy(node.get(gate_key))
+    node[gate_key] = apply_visibility_users(
+        node.get(gate_key) if isinstance(node.get(gate_key), list) else node.get(gate_key),
         users,
         merge_mode=merge_mode,
     )
-    if node["visibility"] == before:
+    if node[gate_key] == before:
         return working, "unchanged"
     return working, "ok"
 

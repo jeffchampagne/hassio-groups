@@ -214,3 +214,131 @@ def test_replace_mode_keeps_non_user_top_level() -> None:
     assert not any(
         c.get("condition") == "user" and c.get("users") == ["a"] for c in out
     )
+
+
+def test_conditional_or_state_user_rewrites_conditions_not_visibility() -> None:
+    """Building Mode Closed: type:conditional with or(state, user) in conditions.
+
+    Sync must rewrite the nested condition:user leaf and must not invent a
+    sibling visibility array (HA ignores visibility on conditional cards).
+    """
+    cfg = {
+        "views": [
+            {
+                "title": "Building",
+                "path": "home",
+                "sections": [
+                    {
+                        "title": "Mode",
+                        "cards": [
+                            {
+                                "type": "conditional",
+                                "conditions": [
+                                    {
+                                        "condition": "or",
+                                        "conditions": [
+                                            {
+                                                "condition": "state",
+                                                "entity": "input_select.building_mode",
+                                                "state": "Closed",
+                                            },
+                                            {
+                                                "condition": "user",
+                                                "users": ["owner"],
+                                            },
+                                        ],
+                                    }
+                                ],
+                                "card": {
+                                    "type": "custom:button-card",
+                                    "name": "Closed",
+                                    "entity": "input_select.building_mode",
+                                },
+                            }
+                        ],
+                    }
+                ],
+            }
+        ]
+    }
+    loc = Locator(kind="card", view_index=0, section_index=0, card_index=0)
+    new_cfg, status = apply_binding_to_config(cfg, loc, ["u1", "u2"])
+    assert status == "ok"
+    assert new_cfg is not None
+    node = resolve_locator(new_cfg, loc)
+    assert node is not None
+    assert "visibility" not in node
+    assert node["conditions"][0]["condition"] == "or"
+    assert node["conditions"][0]["conditions"][0] == {
+        "condition": "state",
+        "entity": "input_select.building_mode",
+        "state": "Closed",
+    }
+    assert node["conditions"][0]["conditions"][1] == {
+        "condition": "user",
+        "users": ["u1", "u2"],
+    }
+    # Source config untouched
+    assert cfg["views"][0]["sections"][0]["cards"][0]["conditions"][0]["conditions"][1][
+        "users"
+    ] == ["owner"]
+
+
+def test_conditional_and_tree_rewrites_user_leaf() -> None:
+    """Nested and() trees also rewrite the condition:user leaf in place."""
+    cfg = {
+        "views": [
+            {
+                "cards": [
+                    {
+                        "type": "conditional",
+                        "conditions": [
+                            {
+                                "condition": "and",
+                                "conditions": [
+                                    {
+                                        "condition": "state",
+                                        "entity": "binary_sensor.x",
+                                        "state": "on",
+                                    },
+                                    {"condition": "user", "users": ["old"]},
+                                ],
+                            }
+                        ],
+                        "card": {"type": "markdown", "content": "secret"},
+                    }
+                ]
+            }
+        ]
+    }
+    loc = Locator(kind="card", view_index=0, card_index=0)
+    new_cfg, status = apply_binding_to_config(cfg, loc, ["a", "b"])
+    assert status == "ok"
+    node = resolve_locator(new_cfg, loc)
+    assert "visibility" not in node
+    assert node["conditions"][0]["condition"] == "and"
+    assert node["conditions"][0]["conditions"][1]["users"] == ["a", "b"]
+    assert node["conditions"][0]["conditions"][0]["condition"] == "state"
+
+
+def test_conditional_plain_user_conditions_rewritten() -> None:
+    """Simple conditions: [condition:user] — rewrite in place, no visibility."""
+    cfg = {
+        "views": [
+            {
+                "cards": [
+                    {
+                        "type": "conditional",
+                        "conditions": [{"condition": "user", "users": ["old"]}],
+                        "card": {"type": "entities", "entities": ["light.a"]},
+                    }
+                ]
+            }
+        ]
+    }
+    loc = Locator(kind="card", view_index=0, card_index=0)
+    new_cfg, status = apply_binding_to_config(cfg, loc, ["n1"])
+    assert status == "ok"
+    node = resolve_locator(new_cfg, loc)
+    assert "visibility" not in node
+    assert node["conditions"] == [{"condition": "user", "users": ["n1"]}]
