@@ -416,13 +416,6 @@ def _node_label(node: dict[str, Any], *, fallback: str) -> str:
             return first.strip()
         if isinstance(first, dict) and first.get("entity"):
             return str(first.get("entity"))
-    # Conditional wrappers have no title — borrow from the inner card.
-    if str(node.get("type") or "") == "conditional":
-        wrapped = node.get("card")
-        if isinstance(wrapped, dict):
-            inner = _node_label(wrapped, fallback="")
-            if inner:
-                return inner
     # Do not use type as the display name (e.g. "heading") — keep type in its own field.
     return fallback
 
@@ -697,31 +690,6 @@ def visibility_has_user_condition(visibility: Any) -> bool:
     return False
 
 
-def _has_user_gate(node: dict[str, Any]) -> bool:
-    """True when the node has a visibility/conditions tree that may contain users."""
-    if isinstance(node.get("visibility"), list):
-        return True
-    return str(node.get("type") or "") == "conditional" and isinstance(
-        node.get("conditions"), list
-    )
-
-
-def _user_gate_tree(node: dict[str, Any]) -> Any:
-    """Return the condition tree that gates people visibility for this node."""
-    # Conditionals are gated by ``conditions``; prefer that even if a stale
-    # sibling ``visibility`` people block was invented by an older sync.
-    if str(node.get("type") or "") == "conditional":
-        conditions = node.get("conditions")
-        if isinstance(conditions, list) and (
-            visibility_has_user_condition(conditions) or conditions
-        ):
-            return conditions
-    visibility = node.get("visibility")
-    if visibility_has_user_condition(visibility):
-        return visibility
-    return visibility
-
-
 def collect_visibility_user_ids(visibility: Any) -> list[str]:
     """Unique user IDs from every condition:user leaf (order preserved)."""
     out: list[str] = []
@@ -785,13 +753,6 @@ def locators_match(left: Any, right: Any) -> bool:
         return False
     return True
 
-
-def breadcrumb_for_locator(config: dict[str, Any], locator: Any) -> str:
-    """Resolve view › section › … breadcrumb for a locator against a dashboard config."""
-    for node in list_visibility_nodes(config):
-        if locators_match(locator, node.get("locator")):
-            return str(node.get("breadcrumb") or "")
-    return ""
 
 
 def breadcrumb_for_locator(config: dict[str, Any], locator: Any) -> str:
@@ -889,7 +850,7 @@ def audit_dashboard_user_visibility(
         # Prefer real title from resolved Lovelace node (mushroom primary, title, …).
         label = _node_label(
             resolved,
-            fallback=str(node.get("kind") or "Untitled"),
+            fallback=str(node.get("label") or node.get("kind") or "Untitled"),
         )
         # If label collapsed to the type string, treat as missing.
         if label.strip().lower() == str(elem_type).strip().lower():
@@ -1085,10 +1046,7 @@ def _preview_card_node(
 
 
 def build_dashboard_preview_tree(config: dict[str, Any]) -> list[dict[str, Any]]:
-    """Hierarchical view → section → card tree for the visual locator picker.
-
-    Nested container cards (expander / stacks / grid / conditional) appear as children.
-    """
+    """Hierarchical view → section → card tree for the visual locator picker."""
     tree: list[dict[str, Any]] = []
     views = config.get("views")
     if not isinstance(views, list):
