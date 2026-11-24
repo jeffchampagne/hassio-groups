@@ -282,6 +282,7 @@ class VizGroupsPanel extends LitElement {
     _clipStatus: { state: true },
     _pasteOpen: { state: true },
     _pasteDraft: { state: true },
+    _expandedNested: { state: true },
   };
 
   static styles = css`
@@ -406,6 +407,11 @@ class VizGroupsPanel extends LitElement {
       background: color-mix(in srgb, var(--success-color, #4caf50) 18%, transparent);
       color: var(--success-color, #4caf50);
     }
+    .pill.nested {
+      background: color-mix(in srgb, var(--accent-color, #00bcd4) 18%, transparent);
+      color: var(--accent-color, #00838f);
+    }
+    .pill.nested ha-icon { --mdc-icon-size: 14px; width: 14px; height: 14px; }
     .has-tip {
       position: relative;
     }
@@ -501,6 +507,35 @@ class VizGroupsPanel extends LitElement {
       width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center;
       font-size: 0.8rem; font-weight: 600; color: var(--hg-text);
       background: var(--hg-hover-strong); flex-shrink: 0;
+    }
+    .avatar.group {
+      border-radius: 10px;
+      background: color-mix(in srgb, var(--accent-color, #00bcd4) 22%, transparent);
+      color: var(--accent-color, #00838f);
+    }
+    .avatar.group ha-icon { --mdc-icon-size: 18px; width: 18px; height: 18px; }
+    .member-list li.member-group {
+      background: color-mix(in srgb, var(--accent-color, #00bcd4) 8%, transparent);
+      flex-wrap: wrap;
+    }
+    .member-list li.member-group > .member-row {
+      display: flex; align-items: center; gap: 12px; width: 100%;
+    }
+    .member-list .nested-members {
+      list-style: none; margin: 4px 0 0 46px; padding: 0; width: calc(100% - 46px);
+      border-left: 2px solid color-mix(in srgb, var(--accent-color, #00bcd4) 35%, transparent);
+    }
+    .member-list .nested-members li {
+      padding: 6px 10px; border-bottom: 0; opacity: 0.92;
+    }
+    .expand-btn {
+      border: 0; background: transparent; color: var(--hg-text-secondary);
+      cursor: pointer; padding: 4px; border-radius: 6px; font: inherit;
+    }
+    .expand-btn:hover { background: var(--hg-hover); color: var(--hg-text); }
+    .picker-section-title {
+      font-size: 0.72rem; letter-spacing: 0.07em; text-transform: uppercase;
+      color: var(--hg-text-secondary); padding: 10px 12px 4px; margin: 0;
     }
     .member-meta { flex: 1; min-width: 0; }
     .member-meta strong { display: block; font-weight: 600; color: var(--hg-text); }
@@ -898,6 +933,7 @@ class VizGroupsPanel extends LitElement {
     this._draft = null;
     this._bindingDraft = null;
     this._busy = false;
+    this._expandedNested = {};
     this._unsub = null;
     this._groupIdManual = false;
     this._iconFilter = "";
@@ -1237,6 +1273,49 @@ class VizGroupsPanel extends LitElement {
     this._draft = { ...this._draft, group_id: e.target.value };
   }
 
+  _normalizeDraftMembers(raw) {
+    const out = [];
+    const seenU = new Set();
+    const seenG = new Set();
+    for (const item of raw || []) {
+      if (!item) continue;
+      if (typeof item === "string") {
+        const id = item.trim();
+        if (!id || seenU.has(id)) continue;
+        seenU.add(id);
+        out.push({ type: "user", id });
+        continue;
+      }
+      const type = item.type === "group" ? "group" : "user";
+      const id = String(item.id || "").trim();
+      if (!id) continue;
+      if (type === "user") {
+        if (seenU.has(id)) continue;
+        seenU.add(id);
+      } else {
+        if (seenG.has(id)) continue;
+        seenG.add(id);
+      }
+      out.push({ type, id });
+    }
+    return out;
+  }
+
+  _membersFromGroup(group) {
+    if (!group) return [];
+    if (Array.isArray(group.members) && group.members.length) {
+      // Snapshot rows include enriched user/group objects with type.
+      const typed = group.members
+        .filter((m) => m && (m.type === "user" || m.type === "group") && m.id)
+        .map((m) => ({ type: m.type, id: m.id }));
+      if (typed.length) return this._normalizeDraftMembers(typed);
+    }
+    // Legacy fallback.
+    const users = (group.member_user_ids || []).map((id) => ({ type: "user", id }));
+    const groups = (group.member_group_ids || []).map((id) => ({ type: "group", id }));
+    return this._normalizeDraftMembers([...users, ...groups]);
+  }
+
   _openCreateGroup() {
     this._selectedGroupId = null;
     this._groupIdManual = false;
@@ -1244,12 +1323,13 @@ class VizGroupsPanel extends LitElement {
     this._iconPickerOpen = false;
     this._pasteOpen = false;
     this._pasteDraft = "";
+    this._expandedNested = {};
     this._draft = {
       name: "",
       group_id: "",
       description: "",
       icon: "mdi:account-group",
-      member_user_ids: [],
+      members: [],
     };
     this._userSearch = "";
     this._view = "editor";
@@ -1263,48 +1343,68 @@ class VizGroupsPanel extends LitElement {
     this._iconPickerOpen = false;
     this._pasteOpen = false;
     this._pasteDraft = "";
+    this._expandedNested = {};
     this._draft = {
       name: group.name,
       group_id: group.id,
       description: group.description || "",
       icon: group.icon || "mdi:account-group",
-      member_user_ids: [...(group.member_user_ids || [])],
+      members: this._membersFromGroup(group),
     };
     this._userSearch = "";
     this._view = "editor";
     this._ensureIconCatalog();
   }
 
-  _toggleMember(userId) {
-    if (!this._draft) return;
-    const set = new Set(this._draft.member_user_ids || []);
-    const removing = set.has(userId);
-    if (removing) set.delete(userId);
-    else set.add(userId);
-    this._draft = { ...this._draft, member_user_ids: [...set] };
-    void this._persistMembers({
-      successMsg: removing ? "Member removed" : "Member added",
-    });
+  _toggleNestedExpand(groupId) {
+    const key = String(groupId || "");
+    if (!key) return;
+    this._expandedNested = {
+      ...this._expandedNested,
+      [key]: !this._expandedNested[key],
+    };
   }
 
   _addMember(userId) {
     if (!this._draft || !userId) return;
-    const set = new Set(this._draft.member_user_ids || []);
-    if (set.has(userId)) return;
-    set.add(userId);
-    this._draft = { ...this._draft, member_user_ids: [...set] };
+    const members = this._normalizeDraftMembers(this._draft.members || []);
+    if (members.some((m) => m.type === "user" && m.id === userId)) return;
+    this._draft = {
+      ...this._draft,
+      members: [...members, { type: "user", id: userId }],
+    };
     void this._persistMembers({ successMsg: "Member added" });
   }
 
-  _removeMember(userId) {
-    if (!this._draft) return;
-    const before = this._draft.member_user_ids || [];
-    if (!before.includes(userId)) return;
+  _addGroupMember(groupId) {
+    if (!this._draft || !groupId) return;
+    // Never nest a group inside itself.
+    if (groupId === (this._selectedGroupId || this._draft.group_id)) return;
+    const members = this._normalizeDraftMembers(this._draft.members || []);
+    if (members.some((m) => m.type === "group" && m.id === groupId)) return;
     this._draft = {
       ...this._draft,
-      member_user_ids: before.filter((id) => id !== userId),
+      members: [...members, { type: "group", id: groupId }],
     };
-    void this._persistMembers({ successMsg: "Member removed" });
+    void this._persistMembers({ successMsg: "Group added" });
+  }
+
+  _removeMember(memberOrUserId, type = "user") {
+    if (!this._draft) return;
+    const id = typeof memberOrUserId === "object"
+      ? memberOrUserId?.id
+      : memberOrUserId;
+    const mtype = typeof memberOrUserId === "object"
+      ? (memberOrUserId?.type || type)
+      : type;
+    if (!id) return;
+    const before = this._normalizeDraftMembers(this._draft.members || []);
+    const next = before.filter((m) => !(m.type === mtype && m.id === id));
+    if (next.length === before.length) return;
+    this._draft = { ...this._draft, members: next };
+    void this._persistMembers({
+      successMsg: mtype === "group" ? "Group removed" : "Member removed",
+    });
   }
 
   /**
@@ -1322,7 +1422,7 @@ class VizGroupsPanel extends LitElement {
     if (!existing) return false;
 
     const seq = ++this._memberSaveSeq;
-    const member_user_ids = [...(this._draft.member_user_ids || [])];
+    const members = this._normalizeDraftMembers(this._draft.members || []);
     const run = (async () => {
       try {
         const result = await this.hass.connection.sendMessagePromise({
@@ -1332,7 +1432,7 @@ class VizGroupsPanel extends LitElement {
           previous_group_id: groupId,
           description: existing.description || "",
           icon: existing.icon || "mdi:account-group",
-          member_user_ids,
+          members,
         });
         if (seq !== this._memberSaveSeq) return false;
         if (result && (result.groups || result.users)) this._data = result;
@@ -1348,7 +1448,7 @@ class VizGroupsPanel extends LitElement {
         if (saved && this._draft && this._selectedGroupId === groupId) {
           this._draft = {
             ...this._draft,
-            member_user_ids: [...(saved.member_user_ids || [])],
+            members: this._membersFromGroup(saved),
           };
         }
         return false;
@@ -1458,15 +1558,17 @@ class VizGroupsPanel extends LitElement {
     if (!this._draft) return 0;
     const ids = this._parseUserIdsFromText(text);
     if (!ids.length) return 0;
-    const set = new Set(this._draft.member_user_ids || []);
+    const members = this._normalizeDraftMembers(this._draft.members || []);
+    const have = new Set(members.filter((m) => m.type === "user").map((m) => m.id));
     let added = 0;
     for (const id of ids) {
-      if (!set.has(id)) {
-        set.add(id);
+      if (!have.has(id)) {
+        members.push({ type: "user", id });
+        have.add(id);
         added += 1;
       }
     }
-    this._draft = { ...this._draft, member_user_ids: [...set] };
+    this._draft = { ...this._draft, members };
     if (added) {
       void this._persistMembers({
         successMsg: `Added ${added} member${added === 1 ? "" : "s"}`,
@@ -1600,7 +1702,7 @@ class VizGroupsPanel extends LitElement {
       previous_group_id: this._selectedGroupId || undefined,
       description: this._draft.description || "",
       icon: this._normalizeIcon(this._draft.icon),
-      member_user_ids: this._draft.member_user_ids || [],
+      members: this._normalizeDraftMembers(this._draft.members || []),
     });
     this._view = "groups";
     this._draft = null;
@@ -2079,7 +2181,15 @@ class VizGroupsPanel extends LitElement {
             ${groups.length === 0
               ? html`<tr><td colspan="2">No groups yet. Create one to get started.</td></tr>`
               : groups.map(
-                  (g) => html`
+                  (g) => {
+                    const nested = (g.nested_groups || g.members || []).filter(
+                      (m) => m && m.type === "group",
+                    );
+                    const userCount = g.effective_user_count
+                      ?? (g.effective_user_ids || []).length
+                      ?? (g.member_user_ids || []).length
+                      ?? 0;
+                    return html`
                     <tr class="row-click" @click=${() => this._openEditGroup(g)}>
                       <td>
                         <div style="display:flex;align-items:center;gap:10px">
@@ -2090,9 +2200,20 @@ class VizGroupsPanel extends LitElement {
                           </div>
                         </div>
                       </td>
-                      <td><span class="pill">${g.member_count ?? (g.member_user_ids || []).length}</span></td>
+                      <td>
+                        <div class="chip-row">
+                          <span class="pill">${userCount} user${userCount === 1 ? "" : "s"}</span>
+                          ${nested.map((ng) => html`
+                            <span class="pill nested">
+                              ${this._renderHaIcon(ng.icon || "mdi:account-group")}
+                              ${ng.name || ng.id}
+                            </span>
+                          `)}
+                        </div>
+                      </td>
                     </tr>
-                  `
+                  `;
+                  }
                 )}
           </tbody>
         </table>
@@ -2180,12 +2301,112 @@ class VizGroupsPanel extends LitElement {
     `;
   }
 
+  _nestedChildRows(groupId) {
+    const group = this._groups.find((g) => g.id === groupId);
+    if (!group) return [];
+    // Prefer enriched snapshot members (includes nested rows with names).
+    const rows = (group.members || []).filter((m) => m && m.id);
+    if (rows.length) return rows;
+    return this._membersFromGroup(group).map((m) => {
+      if (m.type === "user") {
+        const u = this._users.find((x) => x.id === m.id);
+        return { type: "user", id: m.id, name: u?.name || m.id };
+      }
+      const g = this._groups.find((x) => x.id === m.id);
+      return {
+        type: "group",
+        id: m.id,
+        name: g?.name || m.id,
+        icon: g?.icon || "mdi:account-group",
+        missing: !g,
+      };
+    });
+  }
+
+  _renderMemberRow(member) {
+    if (member.type === "group") {
+      const g = this._groups.find((x) => x.id === member.id);
+      const name = g?.name || member.id;
+      const icon = g?.icon || "mdi:account-group";
+      const expanded = !!this._expandedNested[member.id];
+      const children = expanded ? this._nestedChildRows(member.id) : [];
+      return html`<li class="member-group">
+        <div class="member-row">
+          <button type="button" class="expand-btn"
+            aria-label=${expanded ? "Collapse nested members" : "Expand nested members"}
+            @click=${() => this._toggleNestedExpand(member.id)}>
+            ${expanded ? "▾" : "▸"}
+          </button>
+          <div class="avatar group">${this._renderHaIcon(icon)}</div>
+          <div class="member-meta">
+            <strong>${name}</strong>
+            <span>Group · ${member.id}</span>
+          </div>
+          <div class="row-actions">
+            <button type="button" class="btn btn-danger btn-x has-tip"
+              data-tip="Remove nested group"
+              aria-label="Remove nested group"
+              @click=${() => this._removeMember({ type: "group", id: member.id })}>×</button>
+          </div>
+        </div>
+        ${expanded
+          ? html`<ul class="nested-members">
+              ${children.length === 0
+                ? html`<li style="color:var(--hg-text-secondary)">No members in this group.</li>`
+                : children.map((child) => {
+                    if (child.type === "group") {
+                      return html`<li>
+                        <div class="avatar group">${this._renderHaIcon(child.icon || "mdi:account-group")}</div>
+                        <div class="member-meta">
+                          <strong>${child.name || child.id}</strong>
+                          <span>Group · ${child.id}</span>
+                        </div>
+                      </li>`;
+                    }
+                    return html`<li>
+                      <div class="avatar">${this._initials(child.name || child.id)}</div>
+                      <div class="member-meta">
+                        <strong>${child.name || child.id}</strong>
+                        <span>${child.id}</span>
+                      </div>
+                    </li>`;
+                  })}
+            </ul>`
+          : nothing}
+      </li>`;
+    }
+    const u = this._users.find((x) => x.id === member.id);
+    return html`<li>
+      <div class="avatar">${this._initials(u?.name || member.id)}</div>
+      <div class="member-meta">
+        <strong>${u?.name || member.id}</strong>
+        <span>${member.id}</span>
+      </div>
+      <div class="row-actions">
+        <button type="button" class="btn btn-danger btn-x has-tip"
+          data-tip="Remove user from group"
+          aria-label="Remove user from group"
+          @click=${() => this._removeMember({ type: "user", id: member.id })}>×</button>
+      </div>
+    </li>`;
+  }
+
   _renderEditor() {
     const d = this._draft;
     if (!d) return nothing;
-    const selected = new Set(d.member_user_ids || []);
+    const members = this._normalizeDraftMembers(d.members || []);
+    const selectedUsers = new Set(members.filter((m) => m.type === "user").map((m) => m.id));
+    const selectedGroups = new Set(members.filter((m) => m.type === "group").map((m) => m.id));
+    const selfId = this._selectedGroupId || d.group_id;
     const editing = !!this._selectedGroupId;
     const suggested = this._slugify(d.name);
+    const q = (this._userSearch || "").trim().toLowerCase();
+    const availableGroups = this._groups
+      .filter((g) => g.id !== selfId && !selectedGroups.has(g.id))
+      .filter((g) => {
+        if (!q) return true;
+        return (g.name || "").toLowerCase().includes(q) || (g.id || "").toLowerCase().includes(q);
+      });
     return html`
       <div class="hero">
         <h1>${editing ? "Edit group" : "New group"}</h1>
@@ -2213,7 +2434,7 @@ class VizGroupsPanel extends LitElement {
           </details>
           <div class="toolbar">
             <button class="btn btn-primary" ?disabled=${this._busy} @click=${this._saveGroup}>Save</button>
-            <button class="btn btn-ghost" @click=${() => { this._view = "groups"; this._draft = null; this._iconPickerOpen = false; }}>Cancel</button>
+            <button class="btn btn-ghost" @click=${() => { this._view = "groups"; this._draft = null; this._iconPickerOpen = false; this._expandedNested = {}; }}>Cancel</button>
             ${editing
               ? html`<span class="spacer"></span>
                   <button class="btn btn-danger" ?disabled=${this._busy} @click=${this._deleteGroup}>Delete</button>`
@@ -2225,31 +2446,16 @@ class VizGroupsPanel extends LitElement {
           <div class="members-col-head"><h2 class="section-title">Group Members</h2></div>
           <div class="panel-col-body members-body" style="padding:0 8px 12px">
             <ul class="member-list">
-              ${(d.member_user_ids || []).length === 0
-                ? html`<li style="color:var(--hg-text-secondary)">No members yet — click a user on the right.</li>`
-                : (d.member_user_ids || []).map((id) => {
-                    const u = this._users.find((x) => x.id === id);
-                    return html`<li>
-                      <div class="avatar">${this._initials(u?.name || id)}</div>
-                      <div class="member-meta">
-                        <strong>${u?.name || id}</strong>
-                        <span>${id}</span>
-                      </div>
-                      <div class="row-actions">
-                        <button type="button" class="btn btn-danger btn-x has-tip"
-                          data-tip="Remove user from group"
-                          aria-label="Remove user from group"
-                          @click=${() => this._removeMember(id)}>×</button>
-                      </div>
-                    </li>`;
-                  })}
+              ${members.length === 0
+                ? html`<li style="color:var(--hg-text-secondary)">No members yet — add a user or nested group on the right.</li>`
+                : members.map((m) => this._renderMemberRow(m))}
             </ul>
           </div>
         </div>
 
         <div class="panel panel-flush">
           <div class="editor-col-head">
-            <h2 class="section-title">Home Assistant Users</h2>
+            <h2 class="section-title">Add members</h2>
             <button type="button" class="btn btn-ghost btn-sm has-tip tip-below"
               data-tip="Paste user IDs (clipboard, prompt, or paste box)"
               @click=${this._pasteGroupMembers}>Paste</button>
@@ -2274,19 +2480,19 @@ class VizGroupsPanel extends LitElement {
           <div class="user-search">
             <input
               type="search"
-              placeholder="Filter users…"
+              placeholder="Filter users or groups…"
               .value=${this._userSearch}
               @input=${(e) => (this._userSearch = e.target.value)}
             />
             <span class="hint" style="display:block;margin-top:8px">${editing
               ? "Click to add — membership saves immediately. Detail fields still use Save."
-              : "Click to add a user to the group. Paste selects IDs copied from Visibility audit."}</span>
+              : "Click to add a user or nested group. Paste selects user IDs from Visibility audit."}</span>
           </div>
           <div class="user-picker panel-col-body">
+            <p class="picker-section-title">Home Assistant users</p>
             ${this._users
-              .filter((u) => !selected.has(u.id))
+              .filter((u) => !selectedUsers.has(u.id))
               .filter((u) => {
-                const q = (this._userSearch || "").trim().toLowerCase();
                 if (!q) return true;
                 return (u.name || "").toLowerCase().includes(q) || (u.id || "").toLowerCase().includes(q);
               })
@@ -2297,6 +2503,19 @@ class VizGroupsPanel extends LitElement {
                   <div class="member-meta">
                     <strong>${u.name}</strong>
                     <span>${u.id}</span>
+                  </div>
+                </button>
+              `)}
+            <p class="picker-section-title">Groups</p>
+            ${availableGroups.length === 0
+              ? html`<div style="padding:8px 12px;color:var(--hg-text-secondary);font-size:0.85rem">No other groups to nest.</div>`
+              : availableGroups.map((g) => html`
+                <button type="button" class="user-option"
+                  @click=${() => this._addGroupMember(g.id)}>
+                  <div class="avatar group">${this._renderHaIcon(g.icon || "mdi:account-group")}</div>
+                  <div class="member-meta">
+                    <strong>${g.name}</strong>
+                    <span>Group · ${g.id}</span>
                   </div>
                 </button>
               `)}
@@ -2832,20 +3051,31 @@ class VizGroupsPanel extends LitElement {
         <div>
           ${this._groups.map((group) => {
             const entityId = `sensor.vizgroups_${group.id}`;
-            const memberIds = (group.members || []).map((m) => m.id).filter(Boolean);
-            const ids = memberIds.length ? memberIds : (group.member_user_ids || []);
-            const names = (group.members || []).map((m) => m.name || m.id).filter(Boolean);
-            const count = group.member_count ?? ids.length;
+            const ids = group.effective_user_ids
+              || (group.members || [])
+                .filter((m) => !m.type || m.type === "user")
+                .map((m) => m.id)
+                .filter(Boolean);
+            const fallbackIds = ids.length ? ids : (group.member_user_ids || []);
+            const names = (group.members || [])
+              .filter((m) => !m.type || m.type === "user")
+              .map((m) => m.name || m.id)
+              .filter(Boolean);
+            const count = group.effective_user_count ?? fallbackIds.length;
+            const nestedNames = (group.nested_groups || [])
+              .map((m) => m.name || m.id)
+              .filter(Boolean);
             return html`<div class="sensor-item">
               <strong>${group.name}</strong>
               <div class="sensor-entity"><code>${entityId}</code></div>
               <details class="sensor-more">
                 <summary>More attributes</summary>
                 <ul class="sensor-attrs">
-                  <li><span class="k">State</span><span class="v">${count} (member count)</span></li>
+                  <li><span class="k">State</span><span class="v">${count} (effective users)</span></li>
                   <li><span class="k">Group ID</span><span class="v"><code>${group.id}</code></span></li>
-                  <li><span class="k">Members</span><span class="v">${ids.length ? ids.join(", ") : "—"}</span></li>
+                  <li><span class="k">Members</span><span class="v">${fallbackIds.length ? fallbackIds.join(", ") : "—"}</span></li>
                   <li><span class="k">Member names</span><span class="v">${names.length ? names.join(", ") : "—"}</span></li>
+                  <li><span class="k">Nested groups</span><span class="v">${nestedNames.length ? nestedNames.join(", ") : "—"}</span></li>
                   <li><span class="k">Description</span><span class="v">${group.description || "—"}</span></li>
                   <li><span class="k">Icon</span><span class="v"><code>${group.icon || "mdi:account-group"}</code></span></li>
                 </ul>
