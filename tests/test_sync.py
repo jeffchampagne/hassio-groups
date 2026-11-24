@@ -632,3 +632,96 @@ def test_closed_convert_preserves_nested_path() -> None:
     row = next(e for e in audit["elements"] if e["label"] == "Closed")
     assert row["status"] == "managed"
     assert row["binding_id"] == "bind-closed"
+
+
+def test_conditional_or_rewrites_nested_user_not_visibility() -> None:
+    """Closed pattern: or(state, user) must update nested leaf; no sibling visibility."""
+    cfg = {
+        "views": [
+            {
+                "sections": [
+                    {
+                        "cards": [
+                            {
+                                "type": "grid",
+                                "cards": [
+                                    {
+                                        "type": "conditional",
+                                        "conditions": [
+                                            {
+                                                "condition": "or",
+                                                "conditions": [
+                                                    {
+                                                        "condition": "state",
+                                                        "entity": "binary_sensor.x",
+                                                        "state": "off",
+                                                    },
+                                                    {
+                                                        "condition": "user",
+                                                        "users": ["old"],
+                                                    },
+                                                ],
+                                            }
+                                        ],
+                                        # Bug artifact: older sync invented visibility.
+                                        "visibility": [
+                                            {"condition": "user", "users": ["old", "old"]}
+                                        ],
+                                        "card": {
+                                            "type": "custom:button-card",
+                                            "name": "Closed",
+                                            "entity": "input_select.building_mode",
+                                        },
+                                    }
+                                ],
+                            }
+                        ]
+                    }
+                ]
+            }
+        ]
+    }
+    loc = {
+        "kind": "card",
+        "view_index": 0,
+        "section_index": 0,
+        "card_index": 0,
+        "extra": {"nested_path": [0]},
+    }
+    new_cfg, status = apply_binding_to_config(
+        cfg,
+        Locator.from_dict(loc),
+        ["a", "b", "a"],
+        expected_fingerprint=fingerprint_node(
+            cfg["views"][0]["sections"][0]["cards"][0]["cards"][0]
+        ),
+    )
+    assert status == "ok"
+    node = resolve_locator(new_cfg, Locator.from_dict(loc))
+    assert node is not None
+    assert "visibility" not in node or node.get("visibility") in (None, [])
+    assert node["conditions"][0]["condition"] == "or"
+    assert node["conditions"][0]["conditions"][0]["condition"] == "state"
+    user_leaf = node["conditions"][0]["conditions"][1]
+    assert user_leaf["condition"] == "user"
+    assert user_leaf["users"] == ["a", "b"]  # deduped, nested rewrite
+    assert collect_visibility_user_ids(node["conditions"]) == ["a", "b"]
+    # Audit must read conditions, not a stale visibility block.
+    audit = audit_dashboard_user_visibility(
+        new_cfg,
+        dashboard_url_path="lovelace",
+        bindings=[
+            {
+                "id": "bind-closed",
+                "label": "Closed",
+                "dashboard_url_path": "lovelace",
+                "locator": loc,
+                "fingerprint": fingerprint_node(node),
+                "stale": False,
+                "expression": {"include": ["force-closed"], "exclude": []},
+            }
+        ],
+    )
+    row = next(e for e in audit["elements"] if e["label"] == "Closed")
+    assert row["status"] == "managed"
+    assert row["lovelace_users"] == ["a", "b"]

@@ -159,7 +159,15 @@ def resolve_locator(config: dict[str, Any], locator: Locator) -> dict[str, Any] 
 
 def make_user_condition(users: list[str]) -> dict[str, Any]:
     """Build a condition:user leaf. Empty users is fail-closed."""
-    return {"condition": USER_CONDITION, "users": list(users)}
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for uid in users:
+        s = str(uid)
+        if not s or s in seen:
+            continue
+        seen.add(s)
+        ordered.append(s)
+    return {"condition": USER_CONDITION, "users": ordered}
 
 
 def _rewrite_user_leaves(node: Any, users: list[str], *, replaced: list[bool]) -> Any:
@@ -219,6 +227,33 @@ def apply_visibility_users(
     return [rewritten, user_leaf]
 
 
+def _strip_user_visibility_from_conditional(node: dict[str, Any]) -> bool:
+    """Remove invented ``visibility`` people gates on conditional cards.
+
+    Conditional cards already use ``conditions`` (often ``or``/``and`` trees with a
+    nested ``condition: user`` leaf). A sibling ``visibility`` block duplicates the
+    gate and confuses audit/sync — drop user-bearing visibility; keep any purely
+    non-user visibility conditions if present.
+    """
+    if str(node.get("type") or "") != "conditional":
+        return False
+    vis = node.get("visibility")
+    if not isinstance(vis, list) or not vis:
+        return False
+    if not visibility_has_user_condition(vis):
+        return False
+    kept: list[Any] = []
+    for item in vis:
+        if visibility_has_user_condition(item):
+            continue
+        kept.append(item)
+    if kept:
+        node["visibility"] = kept
+    else:
+        node.pop("visibility", None)
+    return True
+
+
 def apply_binding_to_config(
     config: dict[str, Any],
     locator: Locator,
@@ -243,20 +278,31 @@ def apply_binding_to_config(
         if current_fp and current_fp != expected_fingerprint:
             return None, "stale"
 
-    # Conditional cards gate on ``conditions``; everything else uses ``visibility``.
+    # Conditional cards: always rewrite ``conditions`` (including nested or/and
+    # user leaves). Never invent a sibling ``visibility`` people gate.
+    is_conditional = str(node.get("type") or "") == "conditional"
     gate_key = (
         "conditions"
-        if str(node.get("type") or "") == "conditional"
-        and isinstance(node.get("conditions"), list)
+        if is_conditional and isinstance(node.get("conditions"), list)
         else "visibility"
     )
-    before = deepcopy(node.get(gate_key))
+    before_gate = deepcopy(node.get(gate_key))
+    before_vis = deepcopy(node.get("visibility")) if is_conditional else None
     node[gate_key] = apply_visibility_users(
         node.get(gate_key) if isinstance(node.get(gate_key), list) else node.get(gate_key),
         users,
         merge_mode=merge_mode,
     )
-    if node[gate_key] == before:
+    stripped = False
+    if is_conditional:
+        stripped = _strip_user_visibility_from_conditional(node)
+    if node[gate_key] == before_gate and not stripped:
+        return working, "unchanged"
+    if (
+        node[gate_key] == before_gate
+        and stripped
+        and before_vis == node.get("visibility")
+    ):
         return working, "unchanged"
     return working, "ok"
 
@@ -437,11 +483,17 @@ def _has_user_gate(node: dict[str, Any]) -> bool:
 
 def _user_gate_tree(node: dict[str, Any]) -> Any:
     """Return the condition tree that gates people visibility for this node."""
+    # Conditionals are gated by ``conditions``; prefer that even if a stale
+    # sibling ``visibility`` people block was invented by an older sync.
+    if str(node.get("type") or "") == "conditional":
+        conditions = node.get("conditions")
+        if isinstance(conditions, list) and (
+            visibility_has_user_condition(conditions) or conditions
+        ):
+            return conditions
     visibility = node.get("visibility")
     if visibility_has_user_condition(visibility):
         return visibility
-    if str(node.get("type") or "") == "conditional":
-        return node.get("conditions")
     return visibility
 
 
