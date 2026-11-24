@@ -1103,7 +1103,7 @@ class HaGroupsPanel extends LitElement {
     return html`
       <div class="hero">
         <h1>Groups</h1>
-        <p>Create user groups, then bind them to any Lovelace element that supports visibility.</p>
+        <p>Create user groups, then manage visibility on any Lovelace element that supports it.</p>
       </div>
       <div class="stat-row">
         <div class="stat"><div class="n">${groups.length}</div><div class="l">Groups</div></div>
