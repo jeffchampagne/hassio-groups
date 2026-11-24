@@ -8,8 +8,15 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.storage import Store
 
 from .const import STORAGE_KEY, STORAGE_VERSION
-from .models import Binding, Group, SyncMetadata, new_binding, new_group, utcnow_iso
-from .membership import normalize_user_ids
+from .membership import (
+    MEMBER_TYPE_GROUP,
+    MEMBER_TYPE_USER,
+    flatten_all_groups,
+    members_from_legacy,
+    normalize_members,
+    normalize_user_ids,
+)
+from .models import Binding, Group, MemberRef, SyncMetadata, new_binding, new_group, utcnow_iso
 
 
 class GroupsStore:
@@ -58,19 +65,55 @@ class GroupsStore:
     def get_binding(self, binding_id: str) -> Binding | None:
         return self.bindings.get(binding_id)
 
-    def members_by_group(self) -> dict[str, list[str]]:
+    def members_tree(self) -> dict[str, list[dict[str, str]]]:
+        """Raw typed membership tree (users + nested group refs)."""
         return {
-            gid: list(group.member_user_ids) for gid, group in self.groups.items()
+            gid: [m.to_dict() for m in group.members]
+            for gid, group in self.groups.items()
         }
 
+    def members_by_group(self) -> dict[str, list[str]]:
+        """Effective flattened HA user ids per group (cycle-safe)."""
+        return flatten_all_groups(self.members_tree())
+
+    def apply_members_payload(
+        self,
+        group: Group,
+        *,
+        members: list[Any] | None = None,
+        member_user_ids: list[str] | None = None,
+        member_group_ids: list[str] | None = None,
+    ) -> None:
+        """Set group.members from typed and/or legacy payload fields."""
+        # When only user ids are provided (legacy autosave), preserve nested groups.
+        if members is None and member_group_ids is None and member_user_ids is not None:
+            group.member_user_ids = list(member_user_ids)
+            return
+        refs = members_from_legacy(
+            members=members,
+            member_user_ids_list=member_user_ids,
+            member_group_ids_list=member_group_ids,
+        )
+        # Reject self-membership edges up front (cycle of length 1).
+        refs = [r for r in refs if not (r["type"] == MEMBER_TYPE_GROUP and r["id"] == group.id)]
+        group.members = [MemberRef(type=r["type"], id=r["id"]) for r in normalize_members(refs)]
+
     async def upsert_group(self, group: Group) -> Group:
-        group.member_user_ids = normalize_user_ids(group.member_user_ids)
+        # Drop self-refs; normalize typed members.
+        refs = [
+            m.to_dict()
+            for m in group.members
+            if not (m.type == MEMBER_TYPE_GROUP and m.id == group.id)
+        ]
+        group.members = [
+            MemberRef(type=r["type"], id=r["id"]) for r in normalize_members(refs)
+        ]
         self.groups[group.id] = group
         await self.async_save()
         return group
 
     async def rename_group(self, old_id: str, new_id: str) -> Group:
-        """Rename a group id and rewrite binding include/exclude refs."""
+        """Rename a group id and rewrite binding + nested-member refs."""
         old_id = (old_id or "").strip()
         new_id = (new_id or "").strip()
         if not old_id or not new_id:
@@ -98,11 +141,33 @@ class GroupsStore:
                 new_id if g == old_id else g for g in binding.expression.exclude
             ]
             binding.updated = utcnow_iso()
+        for other in self.groups.values():
+            changed = False
+            new_members: list[MemberRef] = []
+            for m in other.members:
+                if m.type == MEMBER_TYPE_GROUP and m.id == old_id:
+                    new_members.append(MemberRef.group(new_id))
+                    changed = True
+                else:
+                    new_members.append(m)
+            if changed:
+                other.members = new_members
+                other.updated = utcnow_iso()
         await self.async_save()
         return group
 
     async def delete_group(self, group_id: str) -> None:
         self.groups.pop(group_id, None)
+        # Drop nested refs to the deleted group.
+        for group in self.groups.values():
+            kept = [
+                m
+                for m in group.members
+                if not (m.type == MEMBER_TYPE_GROUP and m.id == group_id)
+            ]
+            if len(kept) != len(group.members):
+                group.members = kept
+                group.updated = utcnow_iso()
         # Drop bindings that referenced the deleted group
         for binding in list(self.bindings.values()):
             include = [g for g in binding.expression.include if g != group_id]
@@ -115,10 +180,20 @@ class GroupsStore:
         await self.async_save()
 
     async def set_members(self, group_id: str, user_ids: list[str]) -> Group:
+        """Replace direct user members; preserve nested groups (legacy service)."""
         group = self.get_group(group_id)
         if not group:
             raise ValueError(f"Unknown group {group_id}")
         group.member_user_ids = normalize_user_ids(user_ids)
+        group.updated = utcnow_iso()
+        await self.async_save()
+        return group
+
+    async def set_typed_members(self, group_id: str, members: list[Any]) -> Group:
+        group = self.get_group(group_id)
+        if not group:
+            raise ValueError(f"Unknown group {group_id}")
+        self.apply_members_payload(group, members=members)
         group.updated = utcnow_iso()
         await self.async_save()
         return group
@@ -151,9 +226,13 @@ class GroupsStore:
         """Remove deleted HA users from all groups. Returns touched group ids."""
         touched: list[str] = []
         for group in self.groups.values():
-            kept = [uid for uid in group.member_user_ids if uid in valid_user_ids]
-            if kept != group.member_user_ids:
-                group.member_user_ids = kept
+            kept = [
+                m
+                for m in group.members
+                if m.type != MEMBER_TYPE_USER or m.id in valid_user_ids
+            ]
+            if [m.to_dict() for m in kept] != [m.to_dict() for m in group.members]:
+                group.members = kept
                 touched.append(group.id)
         if touched:
             await self.async_save()

@@ -24,6 +24,7 @@ from .const import (
     PANEL_MODULE_URL,
     PANEL_PATH,
 )
+from .membership import MEMBER_TYPE_GROUP, MEMBER_TYPE_USER, flatten_group_users
 from .models import GroupExpression, Locator, new_binding, new_group, utcnow_iso
 from .sync import (
     audit_dashboard_user_visibility,
@@ -316,23 +317,74 @@ def panel_snapshot(hass: HomeAssistant) -> dict[str, Any]:
 
     users = runtime.list_users_for_panel()
     users_by_id = {u["id"]: u for u in users}
+    groups_by_id = {g.id: g for g in runtime.store.groups.values()}
+    members_tree = runtime.store.members_tree()
+    effective_by_group = runtime.store.members_by_group()
     groups = []
     for group in runtime.store.groups.values():
         member_rows = []
-        for uid in group.member_user_ids:
-            info = users_by_id.get(uid)
-            member_rows.append(
-                {
-                    "id": uid,
-                    "name": (info or {}).get("name") or uid,
-                    "is_person": bool((info or {}).get("is_person")),
-                }
-            )
+        nested_group_rows = []
+        for member in group.members:
+            if member.type == MEMBER_TYPE_USER:
+                info = users_by_id.get(member.id)
+                member_rows.append(
+                    {
+                        "type": MEMBER_TYPE_USER,
+                        "id": member.id,
+                        "name": (info or {}).get("name") or member.id,
+                        "is_person": bool((info or {}).get("is_person")),
+                    }
+                )
+            elif member.type == MEMBER_TYPE_GROUP:
+                nested = groups_by_id.get(member.id)
+                nested_group_rows.append(
+                    {
+                        "type": MEMBER_TYPE_GROUP,
+                        "id": member.id,
+                        "name": (nested.name if nested else None) or member.id,
+                        "icon": (nested.icon if nested else None) or "mdi:account-group",
+                        "missing": nested is None,
+                    }
+                )
+                # Expand one level for editor UI (users + further nested groups).
+                child_members = []
+                if nested is not None:
+                    for child in nested.members:
+                        if child.type == MEMBER_TYPE_USER:
+                            info = users_by_id.get(child.id)
+                            child_members.append(
+                                {
+                                    "type": MEMBER_TYPE_USER,
+                                    "id": child.id,
+                                    "name": (info or {}).get("name") or child.id,
+                                }
+                            )
+                        elif child.type == MEMBER_TYPE_GROUP:
+                            cg = groups_by_id.get(child.id)
+                            child_members.append(
+                                {
+                                    "type": MEMBER_TYPE_GROUP,
+                                    "id": child.id,
+                                    "name": (cg.name if cg else None) or child.id,
+                                    "icon": (cg.icon if cg else None)
+                                    or "mdi:account-group",
+                                    "missing": cg is None,
+                                }
+                            )
+                nested_group_rows[-1]["members"] = child_members
+                nested_group_rows[-1]["effective_user_count"] = len(
+                    flatten_group_users(member.id, members_tree)
+                )
+        effective_users = effective_by_group.get(group.id, [])
         groups.append(
             {
                 **group.to_dict(),
-                "members": member_rows,
-                "member_count": len(group.member_user_ids),
+                # Typed rows for UI (users + nested groups, direct membership).
+                "members": member_rows + nested_group_rows,
+                "member_count": len(group.members),
+                "effective_user_ids": effective_users,
+                "effective_user_count": len(effective_users),
+                "nested_groups": nested_group_rows,
             }
         )
     groups.sort(key=lambda g: g["name"].casefold())
@@ -404,6 +456,20 @@ async def ws_list_users(
     connection.send_result(msg["id"], runtime.list_users_for_panel())
 
 
+def _apply_ws_members(runtime: Any, group: Any, msg: dict[str, Any]) -> None:
+    """Apply members / legacy member_* fields from a websocket save payload."""
+    if not any(k in msg for k in ("members", "member_user_ids", "member_group_ids")):
+        return
+    runtime.store.apply_members_payload(
+        group,
+        members=msg.get("members") if "members" in msg else None,
+        member_user_ids=msg.get("member_user_ids") if "member_user_ids" in msg else None,
+        member_group_ids=msg.get("member_group_ids")
+        if "member_group_ids" in msg
+        else None,
+    )
+
+
 @websocket_api.websocket_command(
     {
         vol.Required("type"): f"{DOMAIN}/save_group",
@@ -413,6 +479,8 @@ async def ws_list_users(
         vol.Optional("description"): str,
         vol.Optional("icon"): str,
         vol.Optional("member_user_ids"): [str],
+        vol.Optional("member_group_ids"): [str],
+        vol.Optional("members"): [dict],
     }
 )
 @websocket_api.require_admin
@@ -437,8 +505,7 @@ async def ws_save_group(
         existing.icon = (
             msg.get("icon") or existing.icon or "mdi:account-group"
         ).strip()
-        if "member_user_ids" in msg:
-            existing.member_user_ids = list(msg.get("member_user_ids") or [])
+        _apply_ws_members(runtime, existing, msg)
         existing.updated = utcnow_iso()
         await runtime.store.upsert_group(existing)
     else:
@@ -450,8 +517,7 @@ async def ws_save_group(
             existing.icon = (
                 msg.get("icon") or existing.icon or "mdi:account-group"
             ).strip()
-            if "member_user_ids" in msg:
-                existing.member_user_ids = list(msg.get("member_user_ids") or [])
+            _apply_ws_members(runtime, existing, msg)
             existing.updated = utcnow_iso()
             await runtime.store.upsert_group(existing)
         else:
@@ -460,7 +526,9 @@ async def ws_save_group(
                 group_id=group_id,
                 description=(msg.get("description") or "").strip(),
                 icon=(msg.get("icon") or "mdi:account-group").strip(),
+                members=msg.get("members"),
                 member_user_ids=list(msg.get("member_user_ids") or []),
+                member_group_ids=list(msg.get("member_group_ids") or []),
             )
             if runtime.store.get_group(group.id):
                 connection.send_error(
