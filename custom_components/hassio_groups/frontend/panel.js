@@ -541,7 +541,7 @@ class HaGroupsPanel extends LitElement {
     }
   `;
 
-  constructor()  constructor() {
+  constructor() {
     super();
     this._view = "groups";
     this._data = null;
