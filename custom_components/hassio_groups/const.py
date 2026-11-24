@@ -1,9 +1,9 @@
-"""Constants for HA Groups."""
+"""Constants for Viz Groups."""
 
 from __future__ import annotations
 
 DOMAIN = "hassio_groups"
-NAME = "HA Groups"
+NAME = "Viz Groups"
 
 PLATFORMS: list[str] = ["sensor"]
 

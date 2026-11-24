@@ -2,7 +2,7 @@
   "config": {
     "step": {
       "user": {
-        "title": "HA Groups",
+        "title": "Viz Groups",
         "description": "Manage Home Assistant user groups and Lovelace visibility bindings. Visibility is UX, not an ACL.",
         "data": {
           "dry_run": "Dry-run mode (compute but do not write dashboards)",
@@ -11,13 +11,13 @@
       }
     },
     "abort": {
-      "already_configured": "HA Groups is already configured"
+      "already_configured": "Viz Groups is already configured"
     }
   },
   "options": {
     "step": {
       "init": {
-        "title": "HA Groups options",
+        "title": "Viz Groups options",
         "data": {
           "dry_run": "Dry-run mode",
           "normalize_duplicates": "Normalize duplicate user IDs",

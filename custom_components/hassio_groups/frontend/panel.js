@@ -1,5 +1,5 @@
 /**
- * HA Groups admin panel (Lit).
+ * Viz Groups admin panel (Lit).
  * Friendly names primary; user IDs as subtitle on detail rows only.
  * Visibility is UX, not ACL.
  *
@@ -339,12 +339,33 @@ class HaGroupsPanel extends LitElement {
     .field input:disabled {
       opacity: 0.7; background: var(--hg-bg-secondary); color: var(--hg-disabled);
     }
-    .member-list { list-style: none; margin: 0; padding: 0; }
+    .member-list { list-style: none; margin: 0; padding: 0; overflow: visible; }
     .member-list li {
       display: flex; align-items: center; gap: 12px; padding: 10px 12px;
       border-bottom: 1px solid var(--hg-divider);
+      position: relative;
     }
     .member-list li:last-child { border-bottom: 0; }
+    .member-list li:hover,
+    .member-list li:focus-within { z-index: 60; }
+    .members-col-head {
+      position: relative;
+      z-index: 1;
+      padding: 18px 18px 8px;
+    }
+    .panel-col-body.members-body {
+      overflow: visible;
+      position: relative;
+      z-index: 2;
+    }
+    /* Remove-X tip paints above the Group Members heading */
+    .member-list .btn-x.has-tip::after {
+      z-index: 120;
+      bottom: calc(100% + 8px);
+      right: 0;
+      left: auto;
+      min-width: 10rem;
+    }
     .avatar {
       width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center;
       font-size: 0.8rem; font-weight: 600; color: var(--hg-text);
@@ -1523,7 +1544,7 @@ class HaGroupsPanel extends LitElement {
     return html`
       <div class="shell">
         <nav class="side">
-          <div class="brand">HA Groups</div>
+          <div class="brand">Viz Groups</div>
           <button class="nav-btn ${this._view === "groups" || this._view === "editor" ? "active" : ""}"
             @click=${() => { this._view = "groups"; this._draft = null; this._iconPickerOpen = false; }}>Groups</button>
           <button class="nav-btn ${this._view === "bindings" ? "active" : ""}"
@@ -1686,9 +1707,9 @@ class HaGroupsPanel extends LitElement {
           </div>
         </div>
 
-        <div class="panel">
-          <div style="padding:18px 18px 8px"><h2 class="section-title">Group Members</h2></div>
-          <div class="panel-col-body" style="padding:0 8px 12px">
+        <div class="panel panel-flush">
+          <div class="members-col-head"><h2 class="section-title">Group Members</h2></div>
+          <div class="panel-col-body members-body" style="padding:0 8px 12px">
             <ul class="member-list">
               ${(d.member_user_ids || []).length === 0
                 ? html`<li style="color:var(--hg-text-secondary)">No members yet — click a user on the right.</li>`
@@ -1800,7 +1821,7 @@ class HaGroupsPanel extends LitElement {
         No views found on this dashboard (<code>${this._bindingDraft?.dashboard_url_path || "?"}</code>).
         ${this._error
           ? html`<div style="margin-top:8px;color:var(--danger)">${this._error}</div>`
-          : html`<div style="margin-top:8px">Overview is often empty — pick <strong>HA Groups Lab</strong>, Main Floor, or another tile with real views. Hard-refresh if a new YAML dashboard just appeared.</div>`}
+          : html`<div style="margin-top:8px">Overview is often empty — pick <strong>Viz Groups Lab</strong>, Main Floor, or another tile with real views. Hard-refresh if a new YAML dashboard just appeared.</div>`}
       </div>`;
     }
     const viewIdx = Math.min(this._previewViewIndex, tree.length - 1);
@@ -2105,7 +2126,7 @@ class HaGroupsPanel extends LitElement {
       <div class="panel" style="margin-top:18px;padding:18px">
         <h2 class="section-title">Visibility audit</h2>
         <p class="hint" style="margin:0 0 12px">
-          Pick a dashboard to list elements that already have people condition visibility. Source will be HA Groups when visibility is managed by this integration, or manual dashboard config when visibility was set directly on the dashboard.
+          Pick a dashboard to list elements that already have people condition visibility. Source will be Viz Groups when visibility is managed by this integration, or manual dashboard config when visibility was set directly on the dashboard.
         </p>
         <div class="toolbar" style="margin:0 0 12px">
           <div class="field" style="margin:0;min-width:220px;flex:1">
@@ -2124,7 +2145,7 @@ class HaGroupsPanel extends LitElement {
         ${summary
           ? html`<div class="chip-row" style="margin-bottom:12px">
               <span class="pill">${summary.with_user_visibility} with people visibility</span>
-              <span class="pill ok">${summary.managed} HA Groups</span>
+              <span class="pill ok">${summary.managed} Viz Groups</span>
               <span class="pill warn">${summary.outside} manual dashboard config</span>
             </div>`
           : nothing}
@@ -2176,11 +2197,11 @@ class HaGroupsPanel extends LitElement {
                         <td>
                           ${row.status === "managed"
                             ? html`<span class="pill ok has-tip"
-                                data-tip=${`Managed by HA Groups binding ${row.binding_id || ""}${row.binding_label ? ` (${row.binding_label})` : ""}${row.binding_stale ? " — stale" : ""}`}>
-                                HA Groups
+                                data-tip=${`Managed by Viz Groups binding ${row.binding_id || ""}${row.binding_label ? ` (${row.binding_label})` : ""}${row.binding_stale ? " — stale" : ""}`}>
+                                Viz Groups
                               </span>`
                             : html`<span class="pill warn has-tip"
-                                data-tip="People visibility exists in the dashboard YAML/UI, but no matching HA Groups binding.">
+                                data-tip="People visibility exists in the dashboard YAML/UI, but no matching Viz Groups binding.">
                                 manual dashboard config
                               </span>`}
                         </td>

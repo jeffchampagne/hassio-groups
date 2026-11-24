@@ -1,6 +1,6 @@
 create_group:
   name: Create group
-  description: Create a new HA Groups user group.
+  description: Create a new Viz Groups user group.
   fields:
     name:
       required: true

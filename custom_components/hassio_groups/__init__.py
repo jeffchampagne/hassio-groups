@@ -1,4 +1,4 @@
-"""HA Groups — user groups for Lovelace visibility + automation conditions."""
+"""Viz Groups — user groups for Lovelace visibility + automation conditions."""
 
 from __future__ import annotations
 
@@ -68,7 +68,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Set up HA Groups from a config entry."""
+    """Set up Viz Groups from a config entry."""
     store = GroupsStore(hass)
     await store.async_load()
 

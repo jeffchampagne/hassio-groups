@@ -1,4 +1,4 @@
-"""Pure membership math for HA Groups (no Home Assistant imports)."""
+"""Pure membership math for Viz Groups (no Home Assistant imports)."""
 
 from __future__ import annotations
 

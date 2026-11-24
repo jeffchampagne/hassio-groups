@@ -1,4 +1,4 @@
-"""Data models for HA Groups."""
+"""Data models for Viz Groups."""
 
 from __future__ import annotations
 

@@ -1,6 +1,6 @@
 {
   "domain": "hassio_groups",
-  "name": "HA Groups",
+  "name": "Viz Groups",
   "codeowners": ["@jeffchampagne"],
   "config_flow": true,
   "dependencies": ["http", "frontend", "lovelace"],
