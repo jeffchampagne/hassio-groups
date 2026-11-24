@@ -4,6 +4,9 @@
  * Visibility is UX, not ACL.
  *
  * UX: edit bindings + visual dashboard preview picker; editable group IDs; MDI icon picker.
+ * Live hotfix 2026-11-24: member autosave + picker under selected target + table friendly names.
+ * Live 2026-11-24: Convert audit Manual Dashboard Config → Viz Groups (PR #10 + normalizeLocator).
+ * Live 2026-11-24: Manage visibility breadcrumbs (PR #13).
  */
 import {
   LitElement,
@@ -150,6 +153,7 @@ class VizGroupsPanel extends LitElement {
     _auditBusy: { state: true },
     _auditReport: { state: true },
     _auditExpanded: { state: true },
+    _refreshAuditAfterSave: { state: true },
     _clipStatus: { state: true },
     _pasteOpen: { state: true },
     _pasteDraft: { state: true },
@@ -464,6 +468,12 @@ class VizGroupsPanel extends LitElement {
     .audit-users li { display: flex; align-items: center; gap: 10px; }
     .audit-users .member-meta strong { font-weight: 600; }
     .audit-users .member-meta span { font-size: 0.8rem; color: var(--hg-text-secondary); word-break: break-all; }
+    .audit-source { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+    .audit-source .pill,
+    .audit-source .btn {
+      text-transform: none;
+      letter-spacing: normal;
+    }
     .sensor-attrs { margin: 8px 0 0; padding: 0; list-style: none; display: grid; gap: 4px; }
     .sensor-attrs li {
       display: grid; grid-template-columns: 8.5rem 1fr; gap: 10px;
@@ -778,6 +788,7 @@ class VizGroupsPanel extends LitElement {
     this._auditBusy = false;
     this._auditReport = null;
     this._auditExpanded = {};
+    this._refreshAuditAfterSave = false;
     this._clipStatus = "";
     this._clipStatusTimer = null;
     this._pasteOpen = false;
@@ -807,6 +818,7 @@ class VizGroupsPanel extends LitElement {
         if (ev && ev.event === "snapshot") {
           this._data = ev;
           this._error = "";
+          void this._enrichBindingBreadcrumbs();
         }
       },
       { type: `${DOMAIN}/subscribe` }
@@ -827,7 +839,10 @@ class VizGroupsPanel extends LitElement {
         type: `${DOMAIN}/${type}`,
         ...payload,
       });
-      if (result && (result.groups || result.users)) this._data = result;
+      if (result && (result.groups || result.users)) {
+        this._data = result;
+        void this._enrichBindingBreadcrumbs();
+      }
       return result;
     } catch (err) {
       this._error = err?.message || String(err);
@@ -859,6 +874,101 @@ class VizGroupsPanel extends LitElement {
 
   get _selectedGroup() {
     return this._groups.find((g) => g.id === this._selectedGroupId) || null;
+  }
+
+
+
+  _locatorsMatch(a = {}, b = {}) {
+    const kind = a.kind || b.kind || "card";
+    if ((a.kind || "card") !== (b.kind || "card")) return false;
+    const pathA = a.view_path || null;
+    const pathB = b.view_path || null;
+    if (pathA && pathB) {
+      if (pathA !== pathB) return false;
+    } else if (a.view_index !== b.view_index) {
+      return false;
+    }
+    if (kind === "view") return true;
+    if (a.section_index !== b.section_index) return false;
+    if (kind === "section") return true;
+    if (a.card_index !== b.card_index) return false;
+    const nestA = (a.extra && a.extra.nested_path) || a.nested_path || [];
+    const nestB = (b.extra && b.extra.nested_path) || b.nested_path || [];
+    return JSON.stringify(nestA) === JSON.stringify(nestB);
+  }
+
+  async _enrichBindingBreadcrumbs() {
+    const bindings = this._data?.bindings || [];
+    const missing = bindings.filter((b) => !(b.breadcrumb && String(b.breadcrumb).trim()));
+    if (!this.hass) return;
+    if (!missing.length) {
+      this.requestUpdate();
+      return;
+    }
+    const byDash = {};
+    for (const b of missing) {
+      const path = b.dashboard_url_path || "lovelace";
+      (byDash[path] || (byDash[path] = [])).push(b);
+    }
+    for (const [path, list] of Object.entries(byDash)) {
+      let nodes = [];
+      try {
+        const res = await this.hass.connection.sendMessagePromise({
+          type: `${DOMAIN}/dashboard_nodes`,
+          dashboard_url_path: path,
+        });
+        nodes = res?.nodes || [];
+      } catch (_err) {
+        continue;
+      }
+      for (const b of list) {
+        const match = nodes.find((n) => this._locatorsMatch(b.locator || {}, n.locator || {}));
+        if (match?.breadcrumb) b.breadcrumb = match.breadcrumb;
+      }
+    }
+    this.requestUpdate();
+  }
+
+
+  /** Prefer HA friendly_name when a label looks like domain.object_id. */
+  _looksLikeEntityId(text = "") {
+    const raw = String(text || "").trim();
+    if (!raw || raw.includes(" ") || (raw.match(/\./g) || []).length !== 1) return false;
+    const [domain, objectId] = raw.split(".");
+    return !!(domain && objectId && /^[a-z0-9_]+$/i.test(domain) && /^[a-z0-9_]+$/i.test(objectId));
+  }
+
+  _entityFriendlyName(entityId) {
+    const state = this.hass?.states?.[entityId];
+    const name = state?.attributes?.friendly_name;
+    return (typeof name === "string" && name.trim()) ? name.trim() : "";
+  }
+
+  _displayLabel(text = "") {
+    const raw = String(text || "").trim();
+    if (!raw) return raw;
+    if (raw.includes(" › ")) {
+      return raw.split(" › ").map((part) => this._displayLabel(part)).join(" › ");
+    }
+    if (this._looksLikeEntityId(raw)) {
+      return this._entityFriendlyName(raw) || raw;
+    }
+    return raw;
+  }
+
+  /** Dashboard title from WS list_dashboards payload; fall back to url_path. */
+  _dashboardTitle(urlPath) {
+    const path = urlPath || "lovelace";
+    const dash = this._dashboards.find((d) => d.url_path === path);
+    if (dash?.title) return dash.title;
+    if (path === "lovelace") return "Overview";
+    return path;
+  }
+
+  /** Group friendly name; fall back to id when the group is missing. */
+  _groupName(groupId) {
+    const g = this._groups.find((x) => x.id === groupId);
+    return g?.name || groupId;
   }
 
   _initials(name) {
@@ -1468,18 +1578,13 @@ class VizGroupsPanel extends LitElement {
 
   _selectNode(node) {
     if (!node?.locator) return;
-    const loc = { ...node.locator };
-    // Avoid undefined keys polluting locator
-    Object.keys(loc).forEach((k) => {
-      if (loc[k] === undefined || loc[k] === null || loc[k] === "") {
-        if (k !== "view_path") delete loc[k];
-      }
-    });
+    const loc = this._normalizeLocator(node.locator);
     this._bindingDraft = {
       ...this._bindingDraft,
       locator: loc,
       fingerprint: node.fingerprint || "",
       label: this._bindingDraft.label || node.label || "",
+      breadcrumb: node.breadcrumb || "",
     };
     const title = node.label || node.snippet || loc.kind || "Target";
     const crumb = node.breadcrumb || "";
@@ -1525,6 +1630,7 @@ class VizGroupsPanel extends LitElement {
       include: [],
       exclude: [],
       label: "",
+      breadcrumb: "",
       locator: { kind: "card", view_index: 0, section_index: 0, card_index: 0 },
       merge_mode: "ensure_user_branch",
       fingerprint: "",
@@ -1532,34 +1638,122 @@ class VizGroupsPanel extends LitElement {
     this._view = "bindings";
   }
 
+
+  /** Drop indices that do not apply to the locator kind (section must not keep card_index). */
+  _normalizeLocator(loc = {}) {
+    const kind = loc.kind || "card";
+    const out = { kind };
+    if (loc.view_path) out.view_path = loc.view_path;
+    if (loc.view_index != null && loc.view_index !== "") out.view_index = Number(loc.view_index);
+    else if (!out.view_path) out.view_index = 0;
+    // Preserve nested expander/stack/conditional path from audit/picker.
+    const nested = (loc.extra && Array.isArray(loc.extra.nested_path))
+      ? loc.extra.nested_path
+      : (Array.isArray(loc.nested_path) ? loc.nested_path : null);
+    if (kind === "view") {
+      return out;
+    }
+    if (loc.section_index != null && loc.section_index !== "") {
+      out.section_index = Number(loc.section_index);
+    }
+    if (kind === "section") {
+      return out;
+    }
+    if (loc.card_index != null && loc.card_index !== "") {
+      out.card_index = Number(loc.card_index);
+    } else {
+      out.card_index = 0;
+    }
+    if (nested && nested.length) {
+      out.extra = { nested_path: nested.map((step) => (step === "card" ? "card" : Number(step))) };
+    }
+    return out;
+  }
+
+
+  /** Open Set visibility with audit row target preselected (manual → Viz Groups). */
+  _openConvertFromAudit(row) {
+    if (!row || row.status === "managed") return;
+    const loc = row.locator || {};
+    const dashboard =
+      this._auditDashboard
+      || this._auditReport?.dashboard_url_path
+      || this._dashboards[0]?.url_path
+      || "lovelace";
+    this._bindingDraft = {
+      binding_id: "",
+      dashboard_url_path: dashboard,
+      include: [],
+      exclude: [],
+      label: this._displayLabel(row.label || ""),
+      breadcrumb: this._displayLabel(row.breadcrumb || ""),
+      locator: this._normalizeLocator(loc),
+      merge_mode: "ensure_user_branch",
+      fingerprint: row.fingerprint || "",
+    };
+    this._resetNodeBrowser();
+    const title = this._displayLabel(row.label || "") || this._locatorSummary(
+      this._bindingDraft.locator,
+      this._bindingDraft.fingerprint,
+      "",
+    );
+    this._selectedNodeLabel = title;
+    const bits = [];
+    if (row.breadcrumb && this._displayLabel(row.breadcrumb) !== title) bits.push(this._displayLabel(row.breadcrumb));
+    else {
+      const summary = this._locatorSummary(
+        this._bindingDraft.locator,
+        this._bindingDraft.fingerprint,
+        "",
+      );
+      if (summary && summary !== title) bits.push(summary);
+    }
+    if (row.type || loc.kind) bits.push(row.type || loc.kind);
+    this._selectedNodeSubtitle = bits.join(" · ");
+    this._selectedNodeKey = this._nodeKey({
+      locator: this._bindingDraft.locator,
+      fingerprint: this._bindingDraft.fingerprint,
+    });
+    this._advancedLocatorOpen = false;
+    this._excludeOpen = false;
+    this._pickerStep = "groups";
+    this._view = "bindings";
+    this._error = "";
+    this._refreshAuditAfterSave = true;
+    this.updateComplete.then(() => {
+      const el = this.renderRoot?.querySelector?.(".binding-form");
+      el?.scrollIntoView?.({ behavior: "smooth", block: "start" });
+    });
+  }
+
   _openEditBinding(binding) {
+
     const loc = binding.locator || {};
     this._bindingDraft = {
       binding_id: binding.id,
       dashboard_url_path: binding.dashboard_url_path || "lovelace",
       include: [...(binding.expression?.include || [])],
       exclude: [...(binding.expression?.exclude || [])],
-      label: binding.label || "",
-      locator: {
-        kind: loc.kind || "card",
-        view_path: loc.view_path ?? "",
-        view_index: loc.view_index ?? 0,
-        section_index: loc.section_index ?? 0,
-        card_index: loc.card_index ?? 0,
-      },
+      label: this._displayLabel(binding.label || ""),
+      breadcrumb: this._displayLabel(binding.breadcrumb || ""),
+      locator: this._normalizeLocator(loc),
       merge_mode: binding.merge_mode || "ensure_user_branch",
       fingerprint: binding.fingerprint || "",
     };
     this._resetNodeBrowser();
-    const editTitle = binding.label || this._locatorSummary(
+    const editTitle = this._displayLabel(binding.label || "") || this._locatorSummary(
       this._bindingDraft.locator,
       this._bindingDraft.fingerprint,
       "",
     );
     this._selectedNodeLabel = editTitle;
     const editBits = [];
-    const summary = this._locatorSummary(this._bindingDraft.locator, this._bindingDraft.fingerprint, "");
-    if (summary && summary !== editTitle) editBits.push(summary);
+    const crumb = this._displayLabel(binding.breadcrumb || "");
+    if (crumb && crumb !== editTitle) editBits.push(crumb);
+    else {
+      const summary = this._locatorSummary(this._bindingDraft.locator, this._bindingDraft.fingerprint, "");
+      if (summary && summary !== editTitle) editBits.push(summary);
+    }
     if (loc.kind) editBits.push(loc.kind);
     this._selectedNodeSubtitle = editBits.join(" · ");
     this._selectedNodeKey = this._nodeKey({
@@ -1579,26 +1773,34 @@ class VizGroupsPanel extends LitElement {
       this._error = "At least one include group is required";
       return;
     }
-    const locator = {
-      kind: d.locator?.kind || "card",
-      view_index: Number(d.locator?.view_index ?? 0),
-      section_index: Number(d.locator?.section_index ?? 0),
-      card_index: Number(d.locator?.card_index ?? 0),
-    };
-    if (d.locator?.view_path) locator.view_path = d.locator.view_path;
+    const locator = this._normalizeLocator(d.locator || {});
+    const dashboard = d.dashboard_url_path || "lovelace";
+    const refreshAudit =
+      this._refreshAuditAfterSave
+      || (this._auditReport
+        && (this._auditReport.dashboard_url_path || this._auditDashboard || "lovelace") === dashboard);
     await this._call("save_binding", {
       binding_id: d.binding_id || undefined,
-      dashboard_url_path: d.dashboard_url_path,
+      dashboard_url_path: dashboard,
       include: d.include,
       exclude: d.exclude || [],
       locator,
       merge_mode: d.merge_mode || "ensure_user_branch",
       fingerprint: d.fingerprint || "",
       label: d.label || "",
+      breadcrumb: d.breadcrumb || "",
     });
     this._bindingDraft = null;
+    this._refreshAuditAfterSave = false;
+    this._resetNodeBrowser?.();
+    this._pickerStep = "closed";
     // Re-sync so Lovelace visibility reflects the edit immediately.
     await this._sync(false);
+    // After Convert (or any save on the audited dashboard), refresh audit rows.
+    if (refreshAudit) {
+      this._auditDashboard = dashboard;
+      await this._runVisibilityAudit();
+    }
   }
 
   async _deleteBinding(id) {
@@ -1989,7 +2191,7 @@ class VizGroupsPanel extends LitElement {
       @click=${(e) => { e.stopPropagation(); this._selectNode(card); }}>
       <ha-icon .icon=${card.icon || "mdi:card"}></ha-icon>
       <div>
-        <strong>${card.label}</strong>
+        <strong>${this._displayLabel(card.label)}</strong>
         ${card.snippet ? html`<span class="snip">${card.snippet}</span>` : nothing}
         <span class="meta">${card.type || "card"}${card.has_visibility ? " · visibility" : ""}</span>
       </div>
@@ -2105,7 +2307,7 @@ class VizGroupsPanel extends LitElement {
           <button class="btn btn-ghost" type="button"
             @click=${() => (this._pickerStep = "preview")}>Select a different element</button>
           <button class="btn btn-ghost" type="button"
-            @click=${() => { this._bindingDraft = null; this._resetNodeBrowser(); }}>Cancel</button>
+            @click=${() => { this._bindingDraft = null; this._refreshAuditAfterSave = false; this._resetNodeBrowser(); }}>Cancel</button>
         </div>
       </div>
     `;
@@ -2116,7 +2318,7 @@ class VizGroupsPanel extends LitElement {
     if (!d) return nothing;
     const editing = !!d.binding_id;
     const inGroupsStep = this._pickerStep === "groups";
-    return html`<div class="panel" style="padding:18px;margin-bottom:18px">
+    return html`<div class="panel binding-form" style="padding:18px;margin-bottom:18px">
       <h2 class="section-title">${editing ? "Edit visibility" : "Set visibility"}</h2>
       <div class="layout-2">
         <div>
@@ -2124,49 +2326,41 @@ class VizGroupsPanel extends LitElement {
             ? html`<div class="selected-node">
                 <div class="k">Selected target</div>
                 <strong>${this._selectedNodeLabel}</strong>
-                <div style="margin-top:6px;font-size:0.8rem;color:var(--muted)">${d.dashboard_url_path || ""}</div>
+                <div style="margin-top:6px;font-size:0.8rem;color:var(--muted)">${this._dashboardTitle(d.dashboard_url_path)}</div>
                 ${(d.include || []).length
                   ? html`<div class="chip-row" style="margin-top:10px">
-                      ${(d.include || []).map((id) => {
-                        const g = this._groups.find((x) => x.id === id);
-                        return html`<span class="pill">${g?.name || id}</span>`;
-                      })}
+                      ${(d.include || []).map((id) => html`<span class="pill">${this._groupName(id)}</span>`)}
                     </div>`
                   : nothing}
                 ${(d.exclude || []).length
                   ? html`<div class="chip-row" style="margin-top:6px">
-                      ${(d.exclude || []).map((id) => {
-                        const g = this._groups.find((x) => x.id === id);
-                        return html`<span class="pill warn">not ${g?.name || id}</span>`;
-                      })}
+                      ${(d.exclude || []).map((id) => html`<span class="pill warn">not ${this._groupName(id)}</span>`)}
                     </div>`
                   : nothing}
               </div>`
             : html`<div class="hint">Open the visual picker and choose the dashboard, and then dashboard element you want to manage visibility for.</div>`}
+          <div class="toolbar" style="margin-top:14px">
+            <button class="btn btn-primary btn-sm" type="button" ?disabled=${this._busy}
+              @click=${() => this._openDashboardPicker()}>
+              ${this._pickerStep === "closed" ? "Open visual picker" : "Show dashboards"}
+            </button>
+            ${this._pickerStep !== "closed"
+              ? html`<button class="btn btn-ghost btn-sm" type="button"
+                  @click=${() => (this._pickerStep = "closed")}>Hide picker</button>`
+              : nothing}
+            ${this._selectedNodeLabel && this._pickerStep !== "groups"
+              ? html`<button class="btn btn-ghost btn-sm" type="button"
+                  @click=${() => (this._pickerStep = "groups")}>Choose groups →</button>`
+              : nothing}
+          </div>
           ${!inGroupsStep
-            ? html`<div class="toolbar" style="margin-top:14px">
-                <button class="btn btn-ghost" @click=${() => { this._bindingDraft = null; this._resetNodeBrowser(); }}>Cancel</button>
+            ? html`<div class="toolbar" style="margin-top:10px">
+                <button class="btn btn-ghost" @click=${() => { this._bindingDraft = null; this._refreshAuditAfterSave = false; this._resetNodeBrowser(); }}>Cancel</button>
               </div>`
             : nothing}
         </div>
         <div>
-          <div class="field"><label>Visual picker</label>
-            <div class="toolbar" style="margin:0 0 8px">
-              <button class="btn btn-primary btn-sm" type="button" ?disabled=${this._busy}
-                @click=${() => this._openDashboardPicker()}>
-                ${this._pickerStep === "closed" ? "Open visual picker" : "Show dashboards"}
-              </button>
-              ${this._pickerStep !== "closed"
-                ? html`<button class="btn btn-ghost btn-sm" type="button"
-                    @click=${() => (this._pickerStep = "closed")}>Hide picker</button>`
-                : nothing}
-              ${this._selectedNodeLabel && this._pickerStep !== "groups"
-                ? html`<button class="btn btn-ghost btn-sm" type="button"
-                    @click=${() => (this._pickerStep = "groups")}>Choose groups →</button>`
-                : nothing}
-            </div>
-            ${this._renderLocatorPicker()}
-          </div>
+          ${this._renderLocatorPicker()}
         </div>
       </div>
     </div>`;
@@ -2208,7 +2402,7 @@ class VizGroupsPanel extends LitElement {
       <div class="panel" style="margin-top:18px;padding:18px">
         <h2 class="section-title">Visibility audit</h2>
         <p class="hint" style="margin:0 0 12px">
-          Pick a dashboard to list elements that already have people condition visibility. Source will be Viz Groups when visibility is managed by this integration, or manual dashboard config when visibility was set directly on the dashboard.
+          Pick a dashboard to list elements that already have people condition visibility. Source will be Viz Groups when visibility is managed by this integration, or Manual Dashboard Config when visibility was set directly on the dashboard.
         </p>
         <div class="toolbar" style="margin:0 0 12px">
           <div class="field" style="margin:0;min-width:220px;flex:1">
@@ -2228,7 +2422,7 @@ class VizGroupsPanel extends LitElement {
           ? html`<div class="chip-row" style="margin-bottom:12px">
               <span class="pill">${summary.with_user_visibility} with people visibility</span>
               <span class="pill ok">${summary.managed} Viz Groups</span>
-              <span class="pill warn">${summary.outside} manual dashboard config</span>
+              <span class="pill warn">${summary.outside} Manual Dashboard Config</span>
             </div>`
           : nothing}
         <div class="panel" style="border:0;border-top:1px solid var(--hg-divider);border-radius:0">
@@ -2265,9 +2459,9 @@ class VizGroupsPanel extends LitElement {
                             }}>
                             <span class="audit-chevron ${open ? "open" : ""}" aria-hidden="true"></span>
                             <span class="audit-toggle-label">
-                              <strong>${row.label || "Untitled"}</strong>
-                              ${row.breadcrumb && row.breadcrumb !== row.label
-                                ? html`<div style="font-size:0.8rem;color:var(--hg-text-secondary)">${row.breadcrumb}</div>`
+                              <strong>${this._displayLabel(row.label || "Untitled")}</strong>
+                              ${row.breadcrumb && this._displayLabel(row.breadcrumb) !== this._displayLabel(row.label || "")
+                                ? html`<div style="font-size:0.8rem;color:var(--hg-text-secondary)">${this._displayLabel(row.breadcrumb)}</div>`
                                 : nothing}
                             </span>
                           </button>
@@ -2282,10 +2476,17 @@ class VizGroupsPanel extends LitElement {
                                 data-tip=${`Managed by Viz Groups binding ${row.binding_id || ""}${row.binding_label ? ` (${row.binding_label})` : ""}${row.binding_stale ? " — stale" : ""}`}>
                                 Viz Groups
                               </span>`
-                            : html`<span class="pill warn has-tip"
-                                data-tip="People visibility exists in the dashboard YAML/UI, but no matching Viz Groups binding.">
-                                manual dashboard config
-                              </span>`}
+                            : html`<div class="audit-source">
+                                <span class="pill warn has-tip"
+                                  data-tip="People visibility exists in the dashboard YAML/UI, but no matching Viz Groups binding.">
+                                  Manual Dashboard Config
+                                </span>
+                                <button type="button" class="btn btn-primary btn-sm has-tip"
+                                  data-tip="Open Set visibility with this element already selected"
+                                  @click=${() => this._openConvertFromAudit(row)}>
+                                  Convert
+                                </button>
+                              </div>`}
                         </td>
                       </tr>
                       ${open
@@ -2351,11 +2552,23 @@ class VizGroupsPanel extends LitElement {
             ${this._bindings.length === 0
               ? html`<tr><td colspan="6">No visibility rules yet.</td></tr>`
               : this._bindings.map(
-                  (b) => html`<tr class="row-click" @click=${() => this._openEditBinding(b)}>
-                    <td>${b.label || b.id}</td>
-                    <td>${b.dashboard_url_path}</td>
-                    <td><div class="chip-row">${(b.expression?.include || []).map((id) => html`<span class="pill">${id}</span>`)}</div></td>
-                    <td><div class="chip-row">${(b.expression?.exclude || []).map((id) => html`<span class="pill warn">${id}</span>`)}</div></td>
+                  (b) => {
+                    const label = this._displayLabel(b.label || b.id);
+                    const crumb = this._displayLabel(
+                      b.breadcrumb ||
+                      this._locatorSummary(b.locator, b.fingerprint, "") ||
+                      ""
+                    );
+                    return html`<tr class="row-click" @click=${() => this._openEditBinding(b)}>
+                    <td>
+                      <strong>${label}</strong>
+                      ${crumb && crumb !== label
+                        ? html`<div class="muted" style="font-size:0.8rem;opacity:0.75;margin-top:2px">${crumb}</div>`
+                        : nothing}
+                    </td>
+                    <td>${this._dashboardTitle(b.dashboard_url_path)}</td>
+                    <td><div class="chip-row">${(b.expression?.include || []).map((id) => html`<span class="pill">${this._groupName(id)}</span>`)}</div></td>
+                    <td><div class="chip-row">${(b.expression?.exclude || []).map((id) => html`<span class="pill warn">${this._groupName(id)}</span>`)}</div></td>
                     <td>${b.stale ? html`<span class="pill warn">stale</span>` : html`<span class="pill ok">OK</span>`}</td>
                     <td>
                       <div class="row-actions" @click=${(e) => e.stopPropagation()}>
@@ -2363,8 +2576,8 @@ class VizGroupsPanel extends LitElement {
                         <button class="btn btn-danger btn-sm" @click=${() => this._deleteBinding(b.id)}>Remove</button>
                       </div>
                     </td>
-                  </tr>`
-                )}
+                  </tr>`;
+                  })}
           </tbody>
         </table>
       </div>
@@ -2413,4 +2626,9 @@ class VizGroupsPanel extends LitElement {
   }
 }
 
-customElements.define("vizgroups-panel", VizGroupsPanel);
+if (!customElements.get("vizgroups-panel")) {
+  customElements.define("vizgroups-panel", VizGroupsPanel);
+} else {
+  // Soft-reload / cache-bust: keep existing element class.
+}
+
