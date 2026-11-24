@@ -1240,7 +1240,7 @@ class VizGroupsPanel extends LitElement {
     else if (locator.view_index != null) bits.push(`view:${locator.view_index}`);
     if (locator.section_index != null) bits.push(`section:${locator.section_index}`);
     if (locator.card_index != null) bits.push(`card:${locator.card_index}`);
-    const nest = Array.isArray(locator.card_path) ? locator.card_path : [];
+    const nest = this._nestedPath(locator);
     if (nest.length) bits.push(`nest:${nest.join(".")}`);
     if (fingerprint) bits.push(fingerprint.split("|")[0]);
     return bits.join(" · ");
@@ -1249,15 +1249,19 @@ class VizGroupsPanel extends LitElement {
   _nodeKey(node) {
     if (!node?.locator) return "";
     const l = node.locator;
-    const nest = Array.isArray(l.card_path) ? l.card_path.join(".") : "";
+    const nest = this._nestedPath(l).join(".");
     return [l.kind, l.view_path || l.view_index, l.section_index, l.card_index, nest, node.fingerprint || ""].join("|");
   }
 
-  _normalizeCardPath(path) {
-    if (!Array.isArray(path)) return [];
-    return path
-      .map((n) => Number(n))
-      .filter((n) => Number.isInteger(n) && n >= 0);
+  /** Nested path steps from extra.nested_path (or legacy card_path). */
+  _nestedPath(locator = {}) {
+    const raw = locator?.extra?.nested_path ?? locator?.nested_path ?? locator?.card_path;
+    if (!Array.isArray(raw)) return [];
+    return raw.map((step) => {
+      if (step === "card") return "card";
+      const n = Number(step);
+      return Number.isInteger(n) && n >= 0 ? n : null;
+    }).filter((step) => step !== null);
   }
 
   _openDashboardPicker() {
@@ -1388,17 +1392,22 @@ class VizGroupsPanel extends LitElement {
           }
           bucket = view._sectionMap.get(sKey).cards;
         }
-        const nest = this._normalizeCardPath(loc.card_path);
+        const nest = this._nestedPath(loc);
         if (!nest.length) {
           bucket.push(card);
         } else {
           // Parents are emitted before children; walk to the parent container.
           let parent = bucket.find(
             (c) => c.locator?.card_index === loc.card_index
-              && !(c.locator?.card_path && c.locator.card_path.length),
+              && !this._nestedPath(c.locator).length,
           );
           for (let i = 0; i < nest.length - 1; i++) {
-            parent = parent?.cards?.[nest[i]];
+            const step = nest[i];
+            if (step === "card") {
+              parent = parent?.cards?.find?.((c) => true) || parent?.card;
+            } else {
+              parent = parent?.cards?.[step];
+            }
           }
           if (parent) {
             if (!parent.cards) parent.cards = [];
@@ -1495,7 +1504,9 @@ class VizGroupsPanel extends LitElement {
         view_index: loc.view_index ?? 0,
         section_index: loc.section_index ?? 0,
         card_index: loc.card_index ?? 0,
-        card_path: this._normalizeCardPath(loc.card_path),
+        ...(this._nestedPath(loc).length
+          ? { extra: { nested_path: this._nestedPath(loc) } }
+          : {}),
       },
       merge_mode: binding.merge_mode || "ensure_user_branch",
       fingerprint: binding.fingerprint || "",
@@ -1536,8 +1547,8 @@ class VizGroupsPanel extends LitElement {
       card_index: Number(d.locator?.card_index ?? 0),
     };
     if (d.locator?.view_path) locator.view_path = d.locator.view_path;
-    const nest = this._normalizeCardPath(d.locator?.card_path);
-    if (nest.length) locator.card_path = nest;
+    const nest = this._nestedPath(d.locator || {});
+    if (nest.length) locator.extra = { nested_path: nest };
     await this._call("save_binding", {
       binding_id: d.binding_id || undefined,
       dashboard_url_path: d.dashboard_url_path,
