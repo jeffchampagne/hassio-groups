@@ -143,6 +143,7 @@ class HaGroupsPanel extends LitElement {
     _selectedNodeLabel: { state: true },
     _selectedNodeKey: { state: true },
     _advancedLocatorOpen: { state: true },
+    _excludeOpen: { state: true },
   };
 
   static styles = css`
@@ -453,6 +454,46 @@ class HaGroupsPanel extends LitElement {
       font-size: 0.65rem; padding: 2px 7px; border-radius: 999px;
       background: rgba(154,91,18,0.12); color: var(--warn);
     }
+    .bind-sheet {
+      margin-top: 14px; border: 1px solid rgba(31,107,79,0.28); border-radius: 16px;
+      background: rgba(255,255,255,0.92); padding: 16px 16px 14px;
+      box-shadow: 0 10px 30px rgba(15,61,46,0.08);
+    }
+    .bind-sheet h3 {
+      margin: 0 0 4px; font-family: var(--font-display); font-size: 1.35rem;
+      color: var(--accent-deep); font-weight: 400;
+    }
+    .bind-sheet .target-line {
+      font-size: 0.88rem; color: var(--muted); margin: 0 0 14px; line-height: 1.4;
+    }
+    .group-chip-grid { display: flex; flex-wrap: wrap; gap: 8px; }
+    .group-chip {
+      display: inline-flex; align-items: center; gap: 8px;
+      border: 1px solid var(--line); border-radius: 999px; padding: 8px 14px;
+      background: rgba(255,255,255,0.85); cursor: pointer; font: inherit; color: inherit;
+      transition: border-color 0.15s ease, background 0.15s ease, box-shadow 0.15s ease;
+    }
+    .group-chip:hover { border-color: rgba(31,107,79,0.45); }
+    .group-chip.on {
+      border-color: var(--accent); background: rgba(31,107,79,0.12);
+      box-shadow: 0 0 0 3px var(--accent-glow); color: var(--accent-deep); font-weight: 600;
+    }
+    .group-chip.warn.on {
+      border-color: var(--warn); background: rgba(154,91,18,0.14);
+      box-shadow: 0 0 0 3px rgba(154,91,18,0.15); color: var(--warn);
+    }
+    .group-chip .dot {
+      width: 8px; height: 8px; border-radius: 50%; background: var(--line);
+    }
+    .group-chip.on .dot { background: var(--accent); }
+    .group-chip.warn.on .dot { background: var(--warn); }
+    details.exclude-block {
+      margin: 12px 0 4px; border-top: 1px dashed var(--line); padding-top: 10px;
+    }
+    details.exclude-block > summary {
+      cursor: pointer; color: var(--muted); font-size: 0.88rem; list-style: none;
+    }
+    details.exclude-block > summary::-webkit-details-marker { display: none; }
   `;
 
   constructor() {
@@ -471,12 +512,13 @@ class HaGroupsPanel extends LitElement {
     this._nodes = [];
     this._previewTree = [];
     this._nodesBusy = false;
-    this._pickerStep = "closed"; // closed | dashboards | preview
+    this._pickerStep = "closed"; // closed | dashboards | preview | groups
     this._previewViewIndex = 0;
     this._hoverKey = "";
     this._selectedNodeLabel = "";
     this._selectedNodeKey = "";
     this._advancedLocatorOpen = false;
+    this._excludeOpen = false;
   }
 
   connectedCallback() {
@@ -697,6 +739,7 @@ class HaGroupsPanel extends LitElement {
     this._selectedNodeLabel = "";
     this._selectedNodeKey = "";
     this._advancedLocatorOpen = false;
+    this._excludeOpen = false;
     this._nodesBusy = false;
   }
 
@@ -748,8 +791,15 @@ class HaGroupsPanel extends LitElement {
         dashboard_url_path: path,
       });
       this._nodes = result?.nodes || [];
-      this._previewTree = result?.tree || [];
+      let tree = result?.tree || [];
+      if (!tree.length && this._nodes.length) {
+        tree = this._treeFromNodes(this._nodes);
+      }
+      this._previewTree = tree;
       this._previewViewIndex = 0;
+      if (!tree.length) {
+        this._error = this._error || `No views in preview for '${path}' (nodes=${this._nodes.length})`;
+      }
     } catch (err) {
       this._nodes = [];
       this._previewTree = [];
@@ -757,6 +807,93 @@ class HaGroupsPanel extends LitElement {
     } finally {
       this._nodesBusy = false;
     }
+  }
+
+  _treeFromNodes(nodes) {
+    // Fallback when backend omitted tree (stale websocket handler).
+    const views = new Map();
+    for (const n of nodes || []) {
+      const loc = n.locator || {};
+      const vKey = loc.view_path != null && loc.view_path !== "" ? `p:${loc.view_path}` : `i:${loc.view_index}`;
+      if (!views.has(vKey)) {
+        views.set(vKey, {
+          kind: "view",
+          label: n.kind === "view" ? n.label : (loc.view_path || `View ${loc.view_index ?? "?"}`),
+          path: loc.view_path,
+          icon: "mdi:view-dashboard",
+          locator: { kind: "view", view_index: loc.view_index, view_path: loc.view_path },
+          fingerprint: n.kind === "view" ? n.fingerprint : "",
+          has_visibility: n.kind === "view" ? !!n.has_visibility : false,
+          sections: [],
+          cards: [],
+          _sectionMap: new Map(),
+        });
+      }
+      const view = views.get(vKey);
+      if (n.kind === "view") {
+        view.label = n.label || view.label;
+        view.fingerprint = n.fingerprint || "";
+        view.has_visibility = !!n.has_visibility;
+        view.locator = { ...n.locator };
+        continue;
+      }
+      if (n.kind === "section") {
+        const sKey = String(loc.section_index);
+        const section = {
+          kind: "section",
+          label: n.label,
+          breadcrumb: n.breadcrumb,
+          icon: "mdi:view-grid-plus",
+          locator: { ...n.locator },
+          fingerprint: n.fingerprint || "",
+          has_visibility: !!n.has_visibility,
+          cards: [],
+        };
+        view._sectionMap.set(sKey, section);
+        view.sections.push(section);
+        continue;
+      }
+      if (n.kind === "card") {
+        const card = {
+          kind: "card",
+          label: n.label,
+          snippet: n.detail || "",
+          type: n.type || "card",
+          icon: "mdi:card",
+          breadcrumb: n.breadcrumb,
+          locator: { ...n.locator },
+          fingerprint: n.fingerprint || "",
+          has_visibility: !!n.has_visibility,
+        };
+        if (loc.section_index != null && loc.section_index !== "") {
+          const sKey = String(loc.section_index);
+          if (!view._sectionMap.has(sKey)) {
+            const section = {
+              kind: "section",
+              label: `Section ${loc.section_index}`,
+              locator: {
+                kind: "section",
+                view_index: loc.view_index,
+                view_path: loc.view_path,
+                section_index: loc.section_index,
+              },
+              fingerprint: "",
+              has_visibility: false,
+              cards: [],
+            };
+            view._sectionMap.set(sKey, section);
+            view.sections.push(section);
+          }
+          view._sectionMap.get(sKey).cards.push(card);
+        } else {
+          view.cards.push(card);
+        }
+      }
+    }
+    return [...views.values()].map((v) => {
+      delete v._sectionMap;
+      return v;
+    });
   }
 
   _selectNode(node) {
@@ -777,6 +914,18 @@ class HaGroupsPanel extends LitElement {
     this._selectedNodeLabel = node.breadcrumb || node.label || this._locatorSummary(loc, node.fingerprint);
     this._selectedNodeKey = this._nodeKey(node);
     this._hoverKey = "";
+    this._excludeOpen = !!(this._bindingDraft.exclude && this._bindingDraft.exclude.length);
+    this._advancedLocatorOpen = false;
+    this._pickerStep = "groups"; // next step: choose include groups
+  }
+
+  _toggleDraftGroup(field, groupId) {
+    const d = this._bindingDraft;
+    if (!d) return;
+    const cur = new Set(d[field] || []);
+    if (cur.has(groupId)) cur.delete(groupId);
+    else cur.add(groupId);
+    this._bindingDraft = { ...d, [field]: [...cur] };
   }
 
   _onDashboardPathChange(e) {
@@ -832,7 +981,9 @@ class HaGroupsPanel extends LitElement {
       locator: this._bindingDraft.locator,
       fingerprint: this._bindingDraft.fingerprint,
     });
-    this._advancedLocatorOpen = !binding.fingerprint;
+    this._advancedLocatorOpen = false;
+    this._excludeOpen = !!(binding.expression?.exclude || []).length;
+    this._pickerStep = "groups";
     this._view = "bindings";
     this._error = "";
   }
@@ -1131,7 +1282,12 @@ class HaGroupsPanel extends LitElement {
     }
     const tree = this._previewTree || [];
     if (!tree.length) {
-      return html`<div class="preview-empty">No views found on this dashboard.</div>`;
+      return html`<div class="preview-empty">
+        No views found on this dashboard (<code>${this._bindingDraft?.dashboard_url_path || "?"}</code>).
+        ${this._error
+          ? html`<div style="margin-top:8px;color:var(--danger)">${this._error}</div>`
+          : html`<div style="margin-top:8px">Overview is often empty — pick <strong>HA Groups Lab</strong>, Main Floor, or another tile with real views. Hard-refresh if a new YAML dashboard just appeared.</div>`}
+      </div>`;
     }
     const viewIdx = Math.min(this._previewViewIndex, tree.length - 1);
     const view = tree[viewIdx];
@@ -1226,13 +1382,125 @@ class HaGroupsPanel extends LitElement {
   _renderLocatorPicker() {
     if (this._pickerStep === "dashboards") return this._renderDashboardChooser();
     if (this._pickerStep === "preview") return this._renderVisualPreview();
+    if (this._pickerStep === "groups") return this._renderBindGroupsStep();
     return nothing;
+  }
+
+  _renderBindGroupsStep() {
+    const d = this._bindingDraft;
+    if (!d) return nothing;
+    const include = new Set(d.include || []);
+    const exclude = new Set(d.exclude || []);
+    const editing = !!d.binding_id;
+    return html`
+      <div class="bind-sheet">
+        <div class="toolbar" style="margin:0 0 10px">
+          <button class="btn btn-ghost btn-sm" type="button"
+            @click=${() => (this._pickerStep = "preview")}>← Back to preview</button>
+          <span class="spacer"></span>
+        </div>
+        <h3>Who can see this?</h3>
+        <p class="target-line">
+          Binding <strong>${this._selectedNodeLabel || "selected element"}</strong>
+          on <code>${d.dashboard_url_path}</code>.
+          Pick the groups that should include this element.
+        </p>
+        <div class="field">
+          <label>Include groups</label>
+          <span class="hint">Primary — people in these groups can see it (AND).</span>
+          <div class="group-chip-grid" style="margin-top:8px">
+            ${this._groups.length
+              ? this._groups.map(
+                  (g) => html`<button type="button"
+                    class="group-chip ${include.has(g.id) ? "on" : ""}"
+                    @click=${() => this._toggleDraftGroup("include", g.id)}>
+                    <span class="dot"></span>${g.name}
+                  </button>`
+                )
+              : html`<span class="hint">Create a group first.</span>`}
+          </div>
+        </div>
+        <details class="exclude-block" ?open=${this._excludeOpen}
+          @toggle=${(e) => (this._excludeOpen = e.target.open)}>
+          <summary>Exclude groups (optional — rarer)</summary>
+          <div class="field" style="margin-top:10px">
+            <span class="hint">People in these groups are removed even if included above (NOT).</span>
+            <div class="group-chip-grid" style="margin-top:8px">
+              ${this._groups.map(
+                (g) => html`<button type="button"
+                  class="group-chip warn ${exclude.has(g.id) ? "on" : ""}"
+                  @click=${() => this._toggleDraftGroup("exclude", g.id)}>
+                  <span class="dot"></span>${g.name}
+                </button>`
+              )}
+            </div>
+          </div>
+        </details>
+        <div class="field" style="margin-top:14px">
+          <label>Label (optional)</label>
+          <input .value=${d.label || ""}
+            @input=${(e) => (this._bindingDraft = { ...d, label: e.target.value })}
+            placeholder="Friendly name for this binding" />
+        </div>
+        <details class="advanced" ?open=${this._advancedLocatorOpen}
+          @toggle=${(e) => (this._advancedLocatorOpen = e.target.open)}>
+          <summary>Advanced</summary>
+          <div class="field" style="margin-top:12px"><label>Merge mode</label>
+            <select .value=${d.merge_mode || "ensure_user_branch"}
+              @change=${(e) => (this._bindingDraft = { ...d, merge_mode: e.target.value })}>
+              <option value="ensure_user_branch">Update people rule only (keep other conditions)</option>
+              <option value="replace_user_condition">Replace people visibility with these groups</option>
+            </select>
+          </div>
+          <div class="field"><label>Locator kind</label>
+            <select .value=${d.locator?.kind || "card"}
+              @change=${(e) => (this._bindingDraft = { ...d, locator: { ...d.locator, kind: e.target.value } })}>
+              <option value="view">view</option>
+              <option value="section">section</option>
+              <option value="card">card</option>
+              <option value="other">other</option>
+            </select>
+          </div>
+          <div class="field"><label>View path (optional)</label>
+            <input .value=${d.locator?.view_path || ""}
+              @input=${(e) => (this._bindingDraft = { ...d, locator: { ...d.locator, view_path: e.target.value } })} />
+          </div>
+          <div class="field"><label>View index</label>
+            <input type="number" .value=${d.locator?.view_index ?? 0}
+              @input=${(e) => (this._bindingDraft = { ...d, locator: { ...d.locator, view_index: Number(e.target.value) } })} />
+          </div>
+          <div class="field"><label>Section index</label>
+            <input type="number" .value=${d.locator?.section_index ?? 0}
+              @input=${(e) => (this._bindingDraft = { ...d, locator: { ...d.locator, section_index: Number(e.target.value) } })} />
+          </div>
+          <div class="field"><label>Card index</label>
+            <input type="number" .value=${d.locator?.card_index ?? 0}
+              @input=${(e) => (this._bindingDraft = { ...d, locator: { ...d.locator, card_index: Number(e.target.value) } })} />
+          </div>
+          <div class="field"><label>Fingerprint</label>
+            <input .value=${d.fingerprint || ""}
+              @input=${(e) => (this._bindingDraft = { ...d, fingerprint: e.target.value })} />
+          </div>
+        </details>
+        <div class="toolbar" style="margin-top:14px">
+          <button class="btn btn-primary" ?disabled=${this._busy || !(d.include || []).length}
+            @click=${this._saveBinding}>
+            ${editing ? "Save & sync" : "Save binding"}
+          </button>
+          <button class="btn btn-ghost" type="button"
+            @click=${() => (this._pickerStep = "preview")}>Keep picking</button>
+          <button class="btn btn-ghost" type="button"
+            @click=${() => { this._bindingDraft = null; this._resetNodeBrowser(); }}>Cancel</button>
+        </div>
+      </div>
+    `;
   }
 
   _renderBindingForm() {
     const d = this._bindingDraft;
     if (!d) return nothing;
     const editing = !!d.binding_id;
+    const inGroupsStep = this._pickerStep === "groups";
     return html`<div class="panel" style="padding:18px;margin-bottom:18px">
       <h2 class="section-title">${editing ? "Edit binding" : "New binding"}</h2>
       <div class="layout-2">
@@ -1242,9 +1510,6 @@ class HaGroupsPanel extends LitElement {
                 <input .value=${d.binding_id} disabled />
               </div>`
             : nothing}
-          <div class="field"><label>Label</label>
-            <input .value=${d.label || ""} @input=${(e) => (this._bindingDraft = { ...d, label: e.target.value })} />
-          </div>
           <div class="field"><label>Dashboard</label>
             ${this._dashboards.length
               ? html`<select .value=${d.dashboard_url_path} @change=${this._onDashboardPathChange}>
@@ -1260,43 +1525,37 @@ class HaGroupsPanel extends LitElement {
                   @input=${this._onDashboardPathChange} />`
               : html`<input .value=${d.dashboard_url_path} @input=${this._onDashboardPathChange} />`}
           </div>
-          <div class="field"><label>Include groups (AND)</label>
-            <select multiple style="min-height:110px"
-              @change=${(e) => {
-                const vals = [...e.target.selectedOptions].map((o) => o.value);
-                this._bindingDraft = { ...d, include: vals };
-              }}>
-              ${this._groups.map(
-                (g) => html`<option value=${g.id} ?selected=${(d.include || []).includes(g.id)}>${g.name}</option>`
-              )}
-            </select>
-          </div>
-          <div class="field"><label>Exclude groups (NOT)</label>
-            <select multiple style="min-height:90px"
-              @change=${(e) => {
-                const vals = [...e.target.selectedOptions].map((o) => o.value);
-                this._bindingDraft = { ...d, exclude: vals };
-              }}>
-              ${this._groups.map(
-                (g) => html`<option value=${g.id} ?selected=${(d.exclude || []).includes(g.id)}>${g.name}</option>`
-              )}
-            </select>
-          </div>
+          ${this._selectedNodeLabel
+            ? html`<div class="selected-node">
+                <div class="k">Selected target</div>
+                <strong>${this._selectedNodeLabel}</strong>
+                ${(d.include || []).length
+                  ? html`<div class="chip-row" style="margin-top:10px">
+                      ${(d.include || []).map((id) => {
+                        const g = this._groups.find((x) => x.id === id);
+                        return html`<span class="pill">${g?.name || id}</span>`;
+                      })}
+                    </div>`
+                  : html`<div class="hint" style="margin-top:8px">Choose include groups in the next step.</div>`}
+                ${(d.exclude || []).length
+                  ? html`<div class="chip-row" style="margin-top:6px">
+                      ${(d.exclude || []).map((id) => {
+                        const g = this._groups.find((x) => x.id === id);
+                        return html`<span class="pill warn">not ${g?.name || id}</span>`;
+                      })}
+                    </div>`
+                  : nothing}
+              </div>`
+            : html`<div class="hint">Open the visual picker and click a view, section, or card — then choose groups.</div>`}
+          ${!inGroupsStep
+            ? html`<div class="toolbar" style="margin-top:14px">
+                <button class="btn btn-ghost" @click=${() => { this._bindingDraft = null; this._resetNodeBrowser(); }}>Cancel</button>
+              </div>`
+            : nothing}
         </div>
         <div>
-          <div class="field"><label>Target element</label>
-            ${this._selectedNodeLabel
-              ? html`<div class="selected-node">
-                  <div class="k">Selected</div>
-                  <strong>${this._selectedNodeLabel}</strong>
-                  <div style="margin-top:6px;font-size:0.8rem;color:var(--muted)">
-                    ${d.locator?.kind || "?"}
-                    ${d.locator?.view_path ? html` · ${d.locator.view_path}` : nothing}
-                    ${d.fingerprint ? html` · fingerprint set` : nothing}
-                  </div>
-                </div>`
-              : html`<div class="hint" style="margin:0 0 8px">Open the visual picker and click a view, section, or card.</div>`}
-            <div class="toolbar" style="margin:8px 0 0">
+          <div class="field"><label>Visual picker</label>
+            <div class="toolbar" style="margin:0 0 8px">
               <button class="btn btn-primary btn-sm" type="button" ?disabled=${this._busy}
                 @click=${() => this._openDashboardPicker()}>
                 ${this._pickerStep === "closed" ? "Open visual picker" : "Show dashboards"}
@@ -1305,58 +1564,16 @@ class HaGroupsPanel extends LitElement {
                 ? html`<button class="btn btn-ghost btn-sm" type="button"
                     @click=${() => (this._pickerStep = "closed")}>Hide picker</button>`
                 : nothing}
+              ${this._selectedNodeLabel && this._pickerStep !== "groups"
+                ? html`<button class="btn btn-ghost btn-sm" type="button"
+                    @click=${() => (this._pickerStep = "groups")}>Choose groups →</button>`
+                : nothing}
             </div>
             ${this._renderLocatorPicker()}
           </div>
-          <div class="field"><label>Merge mode</label>
-            <select .value=${d.merge_mode || "ensure_user_branch"}
-              @change=${(e) => (this._bindingDraft = { ...d, merge_mode: e.target.value })}>
-              <option value="ensure_user_branch">ensure_user_branch</option>
-              <option value="replace_user_condition">replace_user_condition</option>
-            </select>
-          </div>
-          <details class="advanced" ?open=${this._advancedLocatorOpen}
-            @toggle=${(e) => (this._advancedLocatorOpen = e.target.open)}>
-            <summary>Advanced — manual locator indices</summary>
-            <div class="field" style="margin-top:12px"><label>Locator kind</label>
-              <select .value=${d.locator?.kind || "card"}
-                @change=${(e) => (this._bindingDraft = { ...d, locator: { ...d.locator, kind: e.target.value } })}>
-                <option value="view">view</option>
-                <option value="section">section</option>
-                <option value="card">card</option>
-                <option value="other">other</option>
-              </select>
-            </div>
-            <div class="field"><label>View path (optional)</label>
-              <input .value=${d.locator?.view_path || ""}
-                @input=${(e) => (this._bindingDraft = { ...d, locator: { ...d.locator, view_path: e.target.value } })} />
-            </div>
-            <div class="field"><label>View index</label>
-              <input type="number" .value=${d.locator?.view_index ?? 0}
-                @input=${(e) => (this._bindingDraft = { ...d, locator: { ...d.locator, view_index: Number(e.target.value) } })} />
-            </div>
-            <div class="field"><label>Section index</label>
-              <input type="number" .value=${d.locator?.section_index ?? 0}
-                @input=${(e) => (this._bindingDraft = { ...d, locator: { ...d.locator, section_index: Number(e.target.value) } })} />
-            </div>
-            <div class="field"><label>Card index</label>
-              <input type="number" .value=${d.locator?.card_index ?? 0}
-                @input=${(e) => (this._bindingDraft = { ...d, locator: { ...d.locator, card_index: Number(e.target.value) } })} />
-            </div>
-            <div class="field"><label>Fingerprint</label>
-              <input .value=${d.fingerprint || ""}
-                @input=${(e) => (this._bindingDraft = { ...d, fingerprint: e.target.value })} />
-            </div>
-          </details>
-          <div class="toolbar">
-            <button class="btn btn-primary" ?disabled=${this._busy} @click=${this._saveBinding}>
-              ${editing ? "Save & sync" : "Save binding"}
-            </button>
-            <button class="btn btn-ghost" @click=${() => { this._bindingDraft = null; this._resetNodeBrowser(); }}>Cancel</button>
-          </div>
         </div>
       </div>
-      <div class="callout">Visual picker mirrors the dashboard layout (not a live iframe). Click a tile to fill locator + fingerprint. Saving re-syncs Lovelace.</div>
+      <div class="callout">Click a dashboard tile, then pick include groups. Technical locator / merge options stay under Advanced on that step.</div>
     </div>`;
   }
 

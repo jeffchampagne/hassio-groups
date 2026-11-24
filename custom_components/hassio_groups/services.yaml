@@ -110,11 +110,15 @@ bind_element:
       selector:
         object:
     merge_mode:
+      name: Merge mode
+      description: How to rewrite Lovelace people/user visibility conditions.
       selector:
         select:
           options:
-            - replace_user_condition
-            - ensure_user_branch
+            - label: Update people rule only (keep other conditions)
+              value: ensure_user_branch
+            - label: Replace people visibility with these groups
+              value: replace_user_condition
     label:
       selector:
         text:
@@ -153,5 +157,15 @@ is_member:
         text:
     user_id:
       required: true
+      selector:
+        text:
+
+debug_dashboard:
+  name: Debug dashboard preview
+  description: Return list_dashboards + preview tree summary for a dashboard url_path.
+  fields:
+    dashboard:
+      name: Dashboard
+      example: ha-groups-lab
       selector:
         text:
