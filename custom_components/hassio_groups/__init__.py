@@ -214,8 +214,7 @@ class HassioGroupsRuntime:
             await sensor.async_remove()
 
     async def async_maybe_autosync(self) -> None:
-        if not self.entry.options.get(CONF_AUTO_SYNC, DEFAULT_AUTO_SYNC):
-            return
+        # Auto-sync is always on (UI toggle removed).
         try:
             await self.sync_engine.async_sync()
         except Exception:  # noqa: BLE001

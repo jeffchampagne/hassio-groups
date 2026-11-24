@@ -16,7 +16,6 @@ from .const import (
     CONF_DASHBOARDS,
     CONF_DRY_RUN,
     CONF_NORMALIZE_DUPLICATES,
-    DEFAULT_AUTO_SYNC,
     DEFAULT_DRY_RUN,
     DEFAULT_NORMALIZE_DUPLICATES,
     DOMAIN,
@@ -44,7 +43,7 @@ class HassioGroupsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 title=NAME,
                 data={},
                 options={
-                    CONF_AUTO_SYNC: bool(user_input.get(CONF_AUTO_SYNC, DEFAULT_AUTO_SYNC)),
+                    CONF_AUTO_SYNC: True,  # always on
                     CONF_DRY_RUN: bool(user_input.get(CONF_DRY_RUN, DEFAULT_DRY_RUN)),
                     CONF_NORMALIZE_DUPLICATES: bool(
                         user_input.get(
@@ -59,7 +58,6 @@ class HassioGroupsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             step_id="user",
             data_schema=vol.Schema(
                 {
-                    vol.Optional(CONF_AUTO_SYNC, default=DEFAULT_AUTO_SYNC): cv.boolean,
                     vol.Optional(CONF_DRY_RUN, default=DEFAULT_DRY_RUN): cv.boolean,
                     vol.Optional(
                         CONF_NORMALIZE_DUPLICATES, default=DEFAULT_NORMALIZE_DUPLICATES
@@ -77,7 +75,7 @@ class HassioGroupsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
 
 class HassioGroupsOptionsFlow(config_entries.OptionsFlow):
-    """Options: auto-sync, dry-run, dashboard allowlist."""
+    """Options: dry-run, dashboard allowlist (auto-sync always on)."""
 
     def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
         self._entry = config_entry
@@ -94,7 +92,7 @@ class HassioGroupsOptionsFlow(config_entries.OptionsFlow):
             return self.async_create_entry(
                 title="",
                 data={
-                    CONF_AUTO_SYNC: bool(user_input.get(CONF_AUTO_SYNC, DEFAULT_AUTO_SYNC)),
+                    CONF_AUTO_SYNC: True,  # always on
                     CONF_DRY_RUN: bool(user_input.get(CONF_DRY_RUN, DEFAULT_DRY_RUN)),
                     CONF_NORMALIZE_DUPLICATES: bool(
                         user_input.get(
@@ -111,10 +109,6 @@ class HassioGroupsOptionsFlow(config_entries.OptionsFlow):
             step_id="init",
             data_schema=vol.Schema(
                 {
-                    vol.Optional(
-                        CONF_AUTO_SYNC,
-                        default=opts.get(CONF_AUTO_SYNC, DEFAULT_AUTO_SYNC),
-                    ): cv.boolean,
                     vol.Optional(
                         CONF_DRY_RUN, default=opts.get(CONF_DRY_RUN, DEFAULT_DRY_RUN)
                     ): cv.boolean,

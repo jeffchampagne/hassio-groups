@@ -5,7 +5,6 @@
         "title": "HA Groups",
         "description": "Manage Home Assistant user groups and Lovelace visibility bindings. Visibility is UX, not an ACL.",
         "data": {
-          "auto_sync": "Auto-sync Lovelace on membership changes",
           "dry_run": "Dry-run mode (compute but do not write dashboards)",
           "normalize_duplicates": "Normalize duplicate user IDs"
         }
@@ -20,7 +19,6 @@
       "init": {
         "title": "HA Groups options",
         "data": {
-          "auto_sync": "Auto-sync Lovelace on membership changes",
           "dry_run": "Dry-run mode",
           "normalize_duplicates": "Normalize duplicate user IDs",
           "dashboards": "Dashboard allowlist (comma-separated url paths; empty = all storage dashboards)"

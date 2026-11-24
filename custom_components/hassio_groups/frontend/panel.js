@@ -145,6 +145,10 @@ class HaGroupsPanel extends LitElement {
     _selectedNodeKey: { state: true },
     _advancedLocatorOpen: { state: true },
     _excludeOpen: { state: true },
+    _userSearch: { state: true },
+    _auditDashboard: { state: true },
+    _auditBusy: { state: true },
+    _auditReport: { state: true },
   };
 
   static styles = css`
@@ -197,7 +201,7 @@ class HaGroupsPanel extends LitElement {
       font-size: 1.65rem;
       line-height: 1.1;
       color: var(--hg-text);
-      margin: 0 0 4px;
+      margin: 0 0 28px;
       font-weight: 500;
     }
     .brand-sub {
@@ -219,7 +223,7 @@ class HaGroupsPanel extends LitElement {
       font-family: var(--hg-font-display); font-weight: 500;
       font-size: clamp(1.75rem, 2.8vw, 2.35rem); margin: 0 0 8px; color: var(--hg-text);
     }
-    .hero p { margin: 0; max-width: 52ch; color: var(--hg-text-secondary); line-height: 1.45; }
+    .hero p { margin: 0; color: var(--hg-text-secondary); line-height: 1.45; }
     .toolbar { display: flex; gap: 10px; align-items: center; margin: 18px 0; flex-wrap: wrap; }
     .spacer { flex: 1; }
     .btn {
@@ -237,6 +241,11 @@ class HaGroupsPanel extends LitElement {
       color: var(--hg-error);
     }
     .btn-sm { padding: 6px 12px; font-size: 0.85rem; }
+    .btn-x {
+      width: 30px; height: 30px; padding: 0; border-radius: 8px;
+      display: inline-grid; place-items: center;
+      font-size: 1.15rem; line-height: 1; font-weight: 700;
+    }
     .btn:disabled { opacity: 0.55; cursor: not-allowed; color: var(--hg-disabled); }
     .panel {
       background: var(--hg-card); border: 1px solid var(--hg-divider);
@@ -260,7 +269,49 @@ class HaGroupsPanel extends LitElement {
       background: color-mix(in srgb, var(--hg-warning) 18%, transparent);
       color: var(--hg-warning);
     }
-    .layout-2 { display: grid; grid-template-columns: 1.1fr 0.9fr; gap: 18px; }
+    .pill.ok {
+      background: color-mix(in srgb, var(--success-color, #4caf50) 18%, transparent);
+      color: var(--success-color, #4caf50);
+    }
+    .has-tip {
+      position: relative;
+    }
+    .has-tip::after {
+      content: attr(data-tip);
+      position: absolute;
+      right: 0;
+      bottom: calc(100% + 8px);
+      z-index: 20;
+      min-width: 12rem;
+      max-width: min(18rem, calc(100vw - 2rem));
+      padding: 8px 10px;
+      border-radius: 8px;
+      background: var(--hg-text);
+      color: var(--hg-card);
+      font-size: 0.78rem;
+      font-weight: 500;
+      line-height: 1.35;
+      white-space: normal;
+      text-align: left;
+      box-shadow: 0 6px 18px color-mix(in srgb, var(--hg-text) 18%, transparent);
+      opacity: 0;
+      pointer-events: none;
+      transform: translateY(4px);
+      transition: opacity 0.12s ease, transform 0.12s ease;
+    }
+    .has-tip:hover::after, .has-tip:focus-visible::after {
+      opacity: 1;
+      transform: translateY(0);
+    }
+    .layout-2 { display: grid; grid-template-columns: minmax(180px, 0.72fr) minmax(0, 1.28fr); gap: 18px; }
+    .layout-3 {
+      display: grid; grid-template-columns: minmax(200px, 0.85fr) 1fr 1fr; gap: 18px; align-items: start;
+    }
+    @media (max-width: 1100px) {
+      .layout-3 { grid-template-columns: 1fr; }
+    }
+    .panel-col-body { max-height: min(62vh, 560px); overflow: auto; }
+    .member-list .row-actions { margin-left: auto; }
     .section-title {
       font-family: var(--hg-font-display); font-size: 1.25rem; margin: 0 0 12px;
       color: var(--hg-text); font-weight: 500;
@@ -298,11 +349,42 @@ class HaGroupsPanel extends LitElement {
     .member-meta { flex: 1; min-width: 0; }
     .member-meta strong { display: block; font-weight: 600; color: var(--hg-text); }
     .member-meta span { font-size: 0.8rem; color: var(--hg-text-secondary); word-break: break-all; }
+    .sensor-item { display: block; padding: 14px 0; border-bottom: 1px solid var(--hg-divider); }
+    .sensor-item:last-child { border-bottom: 0; }
+    .sensor-entity {
+      margin-top: 4px; font-size: 0.85rem; color: var(--hg-text-secondary);
+    }
+    .sensor-more {
+      margin-top: 8px;
+    }
+    .sensor-more > summary {
+      cursor: pointer; list-style: none; display: inline-flex; align-items: center; gap: 6px;
+      font-size: 0.82rem; color: var(--hg-text-secondary); user-select: none;
+    }
+    .sensor-more > summary::-webkit-details-marker { display: none; }
+    .sensor-more > summary::before {
+      content: "";
+      width: 0.4em; height: 0.4em;
+      border-right: 2px solid var(--hg-text-secondary);
+      border-bottom: 2px solid var(--hg-text-secondary);
+      transform: rotate(-45deg);
+      transition: transform 0.15s ease;
+    }
+    .sensor-more[open] > summary::before { transform: rotate(45deg); }
+    .sensor-attrs { margin: 8px 0 0; padding: 0; list-style: none; display: grid; gap: 4px; }
+    .sensor-attrs li {
+      display: grid; grid-template-columns: 8.5rem 1fr; gap: 10px;
+      border: 0; padding: 0; font-size: 0.82rem; color: var(--hg-text);
+    }
+    .sensor-attrs .k { color: var(--hg-text-secondary); }
+    .sensor-attrs .v { word-break: break-word; color: var(--hg-text); }
+    .user-search { padding: 0 18px 8px; }
+    .user-search input { width: 100%; }
     .user-picker { display: grid; gap: 8px; max-height: 280px; overflow: auto; padding: 8px; }
     .user-option {
       display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 10px;
       border: 1px solid var(--hg-divider); background: var(--hg-card); cursor: pointer;
-      color: var(--hg-text);
+      color: var(--hg-text); width: 100%; text-align: left; font: inherit;
     }
     .user-option.selected, .user-option:hover {
       border-color: var(--hg-primary); background: var(--hg-hover);
@@ -502,6 +584,10 @@ class HaGroupsPanel extends LitElement {
       margin: 0 0 4px; font-family: var(--hg-font-display); font-size: 1.25rem;
       color: var(--hg-text); font-weight: 500;
     }
+    .bind-sheet h4 {
+      margin: 0 0 8px; font-family: var(--hg-font-display); font-size: 1.05rem;
+      color: var(--hg-text); font-weight: 500; line-height: 1.3;
+    }
     .bind-sheet .target-line {
       font-size: 0.88rem; color: var(--hg-text-secondary); margin: 0 0 14px; line-height: 1.4;
     }
@@ -535,6 +621,35 @@ class HaGroupsPanel extends LitElement {
       cursor: pointer; color: var(--hg-text-secondary); font-size: 0.88rem; list-style: none;
     }
     details.exclude-block > summary::-webkit-details-marker { display: none; }
+    details.exclude-toggle {
+      margin: 14px 0 4px;
+    }
+    details.exclude-toggle > summary {
+      list-style: none;
+      display: inline-flex; align-items: center; gap: 8px;
+      font: inherit; cursor: pointer; user-select: none;
+      border: 1px solid var(--hg-divider); border-radius: 999px;
+      padding: 9px 16px; background: transparent; color: var(--hg-text);
+    }
+    details.exclude-toggle > summary::-webkit-details-marker { display: none; }
+    details.exclude-toggle > summary::before {
+      content: "";
+      width: 0.45em; height: 0.45em;
+      border-right: 2px solid var(--hg-text-secondary);
+      border-bottom: 2px solid var(--hg-text-secondary);
+      transform: rotate(-45deg);
+      transition: transform 0.15s ease;
+    }
+    details.exclude-toggle[open] > summary {
+      background: var(--hg-hover);
+      border-color: color-mix(in srgb, var(--hg-warning) 40%, var(--hg-divider));
+    }
+    details.exclude-toggle[open] > summary::before {
+      transform: rotate(45deg);
+    }
+    details.exclude-toggle > summary:hover {
+      background: var(--hg-hover);
+    }
     code {
       font-family: var(--ha-font-family-code, ui-monospace, SFMono-Regular, Menlo, monospace);
       font-size: 0.9em;
@@ -565,6 +680,10 @@ class HaGroupsPanel extends LitElement {
     this._selectedNodeKey = "";
     this._advancedLocatorOpen = false;
     this._excludeOpen = false;
+    this._userSearch = "";
+    this._auditDashboard = "";
+    this._auditBusy = false;
+    this._auditReport = null;
   }
 
   connectedCallback() {
@@ -636,11 +755,6 @@ class HaGroupsPanel extends LitElement {
 
   get _options() {
     return this._data?.options || {};
-  }
-
-  get _autoSync() {
-    const v = this._options.auto_sync;
-    return v === undefined ? true : !!v;
   }
 
   get _selectedGroup() {
@@ -717,6 +831,7 @@ class HaGroupsPanel extends LitElement {
       icon: "mdi:account-group",
       member_user_ids: [],
     };
+    this._userSearch = "";
     this._view = "editor";
   }
 
@@ -732,6 +847,7 @@ class HaGroupsPanel extends LitElement {
       icon: group.icon || "mdi:account-group",
       member_user_ids: [...(group.member_user_ids || [])],
     };
+    this._userSearch = "";
     this._view = "editor";
   }
 
@@ -741,6 +857,21 @@ class HaGroupsPanel extends LitElement {
     if (set.has(userId)) set.delete(userId);
     else set.add(userId);
     this._draft = { ...this._draft, member_user_ids: [...set] };
+  }
+
+  _addMember(userId) {
+    if (!this._draft || !userId) return;
+    const set = new Set(this._draft.member_user_ids || []);
+    set.add(userId);
+    this._draft = { ...this._draft, member_user_ids: [...set] };
+  }
+
+  _removeMember(userId) {
+    if (!this._draft) return;
+    this._draft = {
+      ...this._draft,
+      member_user_ids: (this._draft.member_user_ids || []).filter((id) => id !== userId),
+    };
   }
 
   _pickIcon(icon) {
@@ -1089,17 +1220,13 @@ class HaGroupsPanel extends LitElement {
   }
 
   async _deleteBinding(id) {
-    if (!confirm("Remove this binding?")) return;
+    if (!confirm("Remove this visibility rule?")) return;
     await this._call("delete_binding", { binding_id: id });
     if (this._bindingDraft?.binding_id === id) this._bindingDraft = null;
   }
 
   async _sync(dryRun = false) {
     await this._call("sync", { dry_run: dryRun });
-  }
-
-  async _setAutoSync(enabled) {
-    await this._call("update_options", { auto_sync: !!enabled });
   }
 
   _automationYaml(group) {
@@ -1116,13 +1243,12 @@ class HaGroupsPanel extends LitElement {
       <div class="shell">
         <nav class="side">
           <div class="brand">HA Groups</div>
-          <div class="brand-sub">Home Assistant</div>
           <button class="nav-btn ${this._view === "groups" || this._view === "editor" ? "active" : ""}"
             @click=${() => { this._view = "groups"; this._draft = null; this._iconPickerOpen = false; }}>Groups</button>
           <button class="nav-btn ${this._view === "bindings" ? "active" : ""}"
-            @click=${() => { this._view = "bindings"; }}>Bindings</button>
+            @click=${() => { this._view = "bindings"; }}>Manage visibility</button>
           <button class="nav-btn ${this._view === "automations" ? "active" : ""}"
-            @click=${() => { this._view = "automations"; }}>Automations</button>
+            @click=${() => { this._view = "automations"; }}>Conditionals</button>
         </nav>
         <main>
           ${this._error ? html`<div class="error">${this._error}</div>` : nothing}
@@ -1140,12 +1266,12 @@ class HaGroupsPanel extends LitElement {
     return html`
       <div class="hero">
         <h1>Groups</h1>
-        <p>Create user groups, then manage visibility on any Lovelace element that supports it.</p>
+        <p>Create user groups, then manage visibility on any dashboard element.</p>
       </div>
       <div class="stat-row">
-        <div class="stat"><div class="n">${groups.length}</div><div class="l">Groups</div></div>
-        <div class="stat"><div class="n">${this._bindings.length}</div><div class="l">Bindings</div></div>
         <div class="stat"><div class="n">${this._users.length}</div><div class="l">Users</div></div>
+        <div class="stat"><div class="n">${groups.length}</div><div class="l">Groups</div></div>
+        <div class="stat"><div class="n">${this._bindings.length}</div><div class="l">${this._bindings.length === 1 ? "Dashboard Element Managed" : "Dashboard Elements Managed"}</div></div>
       </div>
       <div class="toolbar">
         <button class="btn btn-primary" ?disabled=${this._busy} @click=${this._openCreateGroup}>New group</button>
@@ -1154,10 +1280,10 @@ class HaGroupsPanel extends LitElement {
       </div>
       <div class="panel">
         <table>
-          <thead><tr><th>Name</th><th>Members</th><th>Id</th></tr></thead>
+          <thead><tr><th>Name</th><th>Members</th></tr></thead>
           <tbody>
             ${groups.length === 0
-              ? html`<tr><td colspan="3">No groups yet. Create one to get started.</td></tr>`
+              ? html`<tr><td colspan="2">No groups yet. Create one to get started.</td></tr>`
               : groups.map(
                   (g) => html`
                     <tr class="row-click" @click=${() => this._openEditGroup(g)}>
@@ -1171,7 +1297,6 @@ class HaGroupsPanel extends LitElement {
                         </div>
                       </td>
                       <td><span class="pill">${g.member_count ?? (g.member_user_ids || []).length}</span></td>
-                      <td style="color:var(--muted);font-size:0.85rem">${g.id}</td>
                     </tr>
                   `
                 )}
@@ -1235,7 +1360,6 @@ class HaGroupsPanel extends LitElement {
                   </div>`}
             </div>`
           : nothing}
-        <span class="hint">Preview uses Home Assistant’s MDI set. Any valid <code>mdi:</code> name works.</span>
       </div>
     `;
   }
@@ -1249,37 +1373,28 @@ class HaGroupsPanel extends LitElement {
     return html`
       <div class="hero">
         <h1>${editing ? "Edit group" : "New group"}</h1>
-        <p>Friendly names are shown first. User IDs appear as subtitles on member rows.</p>
       </div>
-      <div class="layout-2">
+      <div class="layout-3">
         <div class="panel" style="padding:18px">
           <h2 class="section-title">Details</h2>
           <div class="field"><label>Name</label>
             <input .value=${d.name} @input=${this._onNameInput} />
-          </div>
-          <div class="field"><label>Group ID (slug)</label>
-            <input
-              .value=${d.group_id}
-              placeholder=${suggested || "auto-from-name"}
-              @input=${this._onGroupIdInput}
-            />
-            <span class="hint">
-              ${editing
-                ? (d.group_id && d.group_id !== this._selectedGroupId
-                    ? html`Renaming from <code>${this._selectedGroupId}</code> → <code>${d.group_id}</code> (bindings update).`
-                    : "Editable — change to rename; bindings that reference this group update.")
-                : this._groupIdManual
-                  ? "Custom ID — clear the field and retype the name to resume auto-slug."
-                  : suggested
-                    ? html`Auto-generated as <code>${suggested}</code> — edit to override.`
-                    : "Filled automatically from the name."}
-            </span>
           </div>
           <div class="field"><label>Description</label>
             <textarea rows="3" .value=${d.description}
               @input=${(e) => (this._draft = { ...d, description: e.target.value })}></textarea>
           </div>
           ${this._renderIconPicker()}
+          <details class="exclude-block">
+            <summary>Advanced</summary>
+            <div class="field" style="margin-top:10px"><label>Group ID</label>
+              <input
+                .value=${d.group_id}
+                placeholder=${suggested || "auto-from-name"}
+                readonly
+              />
+            </div>
+          </details>
           <div class="toolbar">
             <button class="btn btn-primary" ?disabled=${this._busy} @click=${this._saveGroup}>Save</button>
             <button class="btn btn-ghost" @click=${() => { this._view = "groups"; this._draft = null; this._iconPickerOpen = false; }}>Cancel</button>
@@ -1289,37 +1404,62 @@ class HaGroupsPanel extends LitElement {
               : nothing}
           </div>
         </div>
+
         <div class="panel">
-          <div style="padding:18px 18px 8px"><h2 class="section-title">Members</h2></div>
-          <div class="user-picker">
-            ${this._users.map((u) => {
-              const on = selected.has(u.id);
-              return html`
-                <label class="user-option ${on ? "selected" : ""}">
-                  <input type="checkbox" .checked=${on} @change=${() => this._toggleMember(u.id)} />
+          <div style="padding:18px 18px 8px"><h2 class="section-title">Group Members</h2></div>
+          <div class="panel-col-body" style="padding:0 8px 12px">
+            <ul class="member-list">
+              ${(d.member_user_ids || []).length === 0
+                ? html`<li style="color:var(--hg-text-secondary)">No members yet — click a user on the right.</li>`
+                : (d.member_user_ids || []).map((id) => {
+                    const u = this._users.find((x) => x.id === id);
+                    return html`<li>
+                      <div class="avatar">${this._initials(u?.name || id)}</div>
+                      <div class="member-meta">
+                        <strong>${u?.name || id}</strong>
+                        <span>${id}</span>
+                      </div>
+                      <div class="row-actions">
+                        <button type="button" class="btn btn-danger btn-x has-tip"
+                          data-tip="Remove user from group"
+                          aria-label="Remove user from group"
+                          @click=${() => this._removeMember(id)}>×</button>
+                      </div>
+                    </li>`;
+                  })}
+            </ul>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div style="padding:18px 18px 8px"><h2 class="section-title">Home Assistant Users</h2></div>
+          <div class="user-search">
+            <input
+              type="search"
+              placeholder="Filter users…"
+              .value=${this._userSearch}
+              @input=${(e) => (this._userSearch = e.target.value)}
+            />
+            <span class="hint" style="display:block;margin-top:8px">Click to add a user to the group.</span>
+          </div>
+          <div class="user-picker panel-col-body">
+            ${this._users
+              .filter((u) => !selected.has(u.id))
+              .filter((u) => {
+                const q = (this._userSearch || "").trim().toLowerCase();
+                if (!q) return true;
+                return (u.name || "").toLowerCase().includes(q) || (u.id || "").toLowerCase().includes(q);
+              })
+              .map((u) => html`
+                <button type="button" class="user-option"
+                  @click=${() => this._addMember(u.id)}>
                   <div class="avatar">${this._initials(u.name)}</div>
                   <div class="member-meta">
                     <strong>${u.name}</strong>
                     <span>${u.id}</span>
                   </div>
-                </label>
-              `;
-            })}
-          </div>
-          <div style="padding:8px 18px 18px">
-            <h3 class="section-title" style="font-size:1.1rem">Selected</h3>
-            <ul class="member-list">
-              ${(d.member_user_ids || []).map((id) => {
-                const u = this._users.find((x) => x.id === id);
-                return html`<li>
-                  <div class="avatar">${this._initials(u?.name || id)}</div>
-                  <div class="member-meta">
-                    <strong>${u?.name || id}</strong>
-                    <span>${id}</span>
-                  </div>
-                </li>`;
-              })}
-            </ul>
+                </button>
+              `)}
           </div>
         </div>
       </div>
@@ -1472,16 +1612,11 @@ class HaGroupsPanel extends LitElement {
         </div>
         <h3>Who can see this?</h3>
         <p class="target-line">
-          Binding <strong>${this._selectedNodeLabel || "selected target"}</strong>
+          Visibility for <strong>${this._selectedNodeLabel || "selected target"}</strong>
           on <code>${d.dashboard_url_path}</code>.
-          ${this._selectedNodeSubtitle
-            ? html`<br /><span class="sub">${this._selectedNodeSubtitle}</span>`
-            : nothing}
-          Pick the groups that should include this element.
         </p>
         <div class="field">
-          <label>Include groups</label>
-          <span class="hint">Primary — people in these groups can see it (AND).</span>
+          <h4>These groups can see this dashboard element.</h4>
           <div class="group-chip-grid" style="margin-top:8px">
             ${this._groups.length
               ? this._groups.map(
@@ -1494,11 +1629,11 @@ class HaGroupsPanel extends LitElement {
               : html`<span class="hint">Create a group first.</span>`}
           </div>
         </div>
-        <details class="exclude-block" ?open=${this._excludeOpen}
+        <details class="exclude-toggle" ?open=${this._excludeOpen}
           @toggle=${(e) => (this._excludeOpen = e.target.open)}>
-          <summary>Exclude groups (optional — rarer)</summary>
+          <summary>Exclude groups</summary>
           <div class="field" style="margin-top:10px">
-            <span class="hint">People in these groups are removed even if included above (NOT).</span>
+            <h4>These groups cannot see this dashboard element.</h4>
             <div class="group-chip-grid" style="margin-top:8px">
               ${this._groups.map(
                 (g) => html`<button type="button"
@@ -1517,7 +1652,7 @@ class HaGroupsPanel extends LitElement {
             <label>Label (optional)</label>
             <input .value=${d.label || ""}
               @input=${(e) => (this._bindingDraft = { ...d, label: e.target.value })}
-              placeholder="Friendly name for this binding" />
+              placeholder="Friendly name for this visibility" />
           </div>
           <div class="field"><label>Merge mode</label>
             <select .value=${d.merge_mode || "ensure_user_branch"}
@@ -1559,10 +1694,10 @@ class HaGroupsPanel extends LitElement {
         <div class="toolbar" style="margin-top:14px">
           <button class="btn btn-primary" ?disabled=${this._busy || !(d.include || []).length}
             @click=${this._saveBinding}>
-            ${editing ? "Save & sync" : "Save binding"}
+            ${editing ? "Save & sync" : "Save visibility"}
           </button>
           <button class="btn btn-ghost" type="button"
-            @click=${() => (this._pickerStep = "preview")}>Select a different target</button>
+            @click=${() => (this._pickerStep = "preview")}>Select a different element</button>
           <button class="btn btn-ghost" type="button"
             @click=${() => { this._bindingDraft = null; this._resetNodeBrowser(); }}>Cancel</button>
         </div>
@@ -1576,16 +1711,13 @@ class HaGroupsPanel extends LitElement {
     const editing = !!d.binding_id;
     const inGroupsStep = this._pickerStep === "groups";
     return html`<div class="panel" style="padding:18px;margin-bottom:18px">
-      <h2 class="section-title">${editing ? "Edit binding" : "New binding"}</h2>
+      <h2 class="section-title">${editing ? "Edit visibility" : "Set visibility"}</h2>
       <div class="layout-2">
         <div>
           ${this._selectedNodeLabel
             ? html`<div class="selected-node">
                 <div class="k">Selected target</div>
                 <strong>${this._selectedNodeLabel}</strong>
-                ${this._selectedNodeSubtitle
-                  ? html`<div class="sub">${this._selectedNodeSubtitle}</div>`
-                  : nothing}
                 <div style="margin-top:6px;font-size:0.8rem;color:var(--muted)">${d.dashboard_url_path || ""}</div>
                 ${(d.include || []).length
                   ? html`<div class="chip-row" style="margin-top:10px">
@@ -1594,7 +1726,7 @@ class HaGroupsPanel extends LitElement {
                         return html`<span class="pill">${g?.name || id}</span>`;
                       })}
                     </div>`
-                  : html`<div class="hint" style="margin-top:8px">Choose include groups in the next step.</div>`}
+                  : nothing}
                 ${(d.exclude || []).length
                   ? html`<div class="chip-row" style="margin-top:6px">
                       ${(d.exclude || []).map((id) => {
@@ -1604,7 +1736,7 @@ class HaGroupsPanel extends LitElement {
                     </div>`
                   : nothing}
               </div>`
-            : html`<div class="hint">Open the visual picker and click a view, section, or card — then choose groups.</div>`}
+            : html`<div class="hint">Open the visual picker and choose the dashboard, and then dashboard element you want to manage visibility for.</div>`}
           ${!inGroupsStep
             ? html`<div class="toolbar" style="margin-top:14px">
                 <button class="btn btn-ghost" @click=${() => { this._bindingDraft = null; this._resetNodeBrowser(); }}>Cancel</button>
@@ -1631,40 +1763,138 @@ class HaGroupsPanel extends LitElement {
           </div>
         </div>
       </div>
-      <div class="callout">Click a dashboard tile, then pick include groups. Technical locator / merge options stay under Advanced on that step.</div>
     </div>`;
   }
 
-  _renderBindings() {
+  async _runVisibilityAudit() {
+    const path = (this._auditDashboard || this._dashboards[0]?.url_path || "lovelace").trim();
+    if (!path) {
+      this._error = "Pick a dashboard to audit";
+      return;
+    }
+    this._auditDashboard = path;
+    this._auditBusy = true;
+    this._error = "";
+    try {
+      const result = await this.hass.connection.sendMessagePromise({
+        type: `${DOMAIN}/visibility_audit`,
+        dashboard_url_path: path,
+      });
+      this._auditReport = result || null;
+    } catch (err) {
+      this._auditReport = null;
+      this._error = err?.message || String(err);
+    } finally {
+      this._auditBusy = false;
+    }
+  }
+
+  _renderVisibilityAudit() {
+    const dashes = this._dashboards.length
+      ? this._dashboards
+      : [{ url_path: "lovelace", title: "Overview" }];
+    const current = this._auditDashboard || dashes[0]?.url_path || "lovelace";
+    const report = this._auditReport;
+    const rows = report?.elements || [];
+    const summary = report?.summary;
+    return html`
+      <div class="panel" style="margin-top:18px;padding:18px">
+        <h2 class="section-title">Visibility audit</h2>
+        <p class="hint" style="margin:0 0 12px">
+          Pick a dashboard to list elements that already have people (<code>condition: user</code>) visibility,
+          and see which are managed by HA Groups versus outside/manual.
+        </p>
+        <div class="toolbar" style="margin:0 0 12px">
+          <div class="field" style="margin:0;min-width:220px;flex:1">
+            <label>Dashboard</label>
+            <select .value=${current}
+              @change=${(e) => { this._auditDashboard = e.target.value; this._auditReport = null; }}>
+              ${dashes.map((d) => html`<option value=${d.url_path}>${d.title || d.url_path}</option>`)}
+            </select>
+          </div>
+          <button class="btn btn-primary" type="button"
+            ?disabled=${this._busy || this._auditBusy}
+            @click=${this._runVisibilityAudit}>
+            ${this._auditBusy ? "Scanning…" : "Run audit"}
+          </button>
+        </div>
+        ${summary
+          ? html`<div class="chip-row" style="margin-bottom:12px">
+              <span class="pill">${summary.with_user_visibility} with people visibility</span>
+              <span class="pill ok">${summary.managed} HA Groups</span>
+              <span class="pill warn">${summary.outside} outside / manual</span>
+            </div>`
+          : nothing}
+        <div class="panel" style="border:0;border-top:1px solid var(--hg-divider);border-radius:0">
+          <table>
+            <thead>
+              <tr>
+                <th>Element</th>
+                <th>Kind</th>
+                <th>People in Lovelace</th>
+                <th>Source</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${!report
+                ? html`<tr><td colspan="4">Run an audit to scan this dashboard.</td></tr>`
+                : rows.length === 0
+                  ? html`<tr><td colspan="4">No elements with people visibility on this dashboard.</td></tr>`
+                  : rows.map((row) => html`<tr>
+                      <td>
+                        <strong>${row.label || "Untitled"}</strong>
+                        ${row.breadcrumb && row.breadcrumb !== row.label
+                          ? html`<div style="font-size:0.8rem;color:var(--hg-text-secondary)">${row.breadcrumb}</div>`
+                          : nothing}
+                      </td>
+                      <td>${row.kind || "—"}</td>
+                      <td>${(row.lovelace_users || []).length
+                        ? html`<span class="pill">${(row.lovelace_users || []).length}</span>`
+                        : "—"}</td>
+                      <td>
+                        ${row.status === "managed"
+                          ? html`<span class="pill ok has-tip"
+                              data-tip=${`Binding ${row.binding_id || ""}${row.binding_stale ? " (stale)" : ""}`}>
+                              HA Groups${row.binding_label ? ` · ${row.binding_label}` : ""}
+                            </span>`
+                          : html`<span class="pill warn">Outside / manual</span>`}
+                      </td>
+                    </tr>`)}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    `;
+  }
+
+    _renderBindings() {
     return html`
       <div class="hero">
-        <h1>Visibility bindings</h1>
+        <h1>Manage visibility</h1>
+        <p>You can control access to any dashboard element by setting the visibility on this page.</p>
       </div>
       <div class="toolbar">
-        <button class="btn btn-primary" @click=${this._openBindingCreate}>New binding</button>
-        <label class="toggle-row" title="Automatically re-sync Lovelace when groups or bindings change">
-          <input type="checkbox" .checked=${this._autoSync} ?disabled=${this._busy}
-            @change=${(e) => this._setAutoSync(e.target.checked)} />
-          Auto sync
-        </label>
+        <button class="btn btn-primary" @click=${this._openBindingCreate}>Set visibility</button>
         <span class="spacer"></span>
-        <button class="btn btn-ghost" ?disabled=${this._busy} @click=${() => this._sync(true)}>Dry-run sync</button>
-        <button class="btn btn-ghost" ?disabled=${this._busy} @click=${() => this._sync(false)}>Sync now</button>
+        <button class="btn btn-ghost has-tip" data-tip="Refreshes the status column."
+          ?disabled=${this._busy} @click=${() => this._sync(true)}>Refresh statuses</button>
+        <button class="btn btn-ghost has-tip" data-tip="Synchronize visibility settings with dashboards."
+          ?disabled=${this._busy} @click=${() => this._sync(false)}>Sync now</button>
       </div>
       ${this._renderBindingForm()}
       <div class="panel">
         <table>
-          <thead><tr><th>Label</th><th>Dashboard</th><th>Include ∩</th><th>Exclude</th><th>Status</th><th></th></tr></thead>
+          <thead><tr><th>Element</th><th>Dashboard</th><th>Include</th><th>Exclude</th><th>Status</th><th></th></tr></thead>
           <tbody>
             ${this._bindings.length === 0
-              ? html`<tr><td colspan="6">No bindings yet.</td></tr>`
+              ? html`<tr><td colspan="6">No visibility rules yet.</td></tr>`
               : this._bindings.map(
                   (b) => html`<tr class="row-click" @click=${() => this._openEditBinding(b)}>
                     <td>${b.label || b.id}</td>
                     <td>${b.dashboard_url_path}</td>
                     <td><div class="chip-row">${(b.expression?.include || []).map((id) => html`<span class="pill">${id}</span>`)}</div></td>
                     <td><div class="chip-row">${(b.expression?.exclude || []).map((id) => html`<span class="pill warn">${id}</span>`)}</div></td>
-                    <td>${b.stale ? html`<span class="pill warn">stale</span>` : html`<span class="pill">ok</span>`}</td>
+                    <td>${b.stale ? html`<span class="pill warn">stale</span>` : html`<span class="pill ok">OK</span>`}</td>
                     <td>
                       <div class="row-actions" @click=${(e) => e.stopPropagation()}>
                         <button class="btn btn-ghost btn-sm" @click=${() => this._openEditBinding(b)}>Edit</button>
@@ -1676,6 +1906,7 @@ class HaGroupsPanel extends LitElement {
           </tbody>
         </table>
       </div>
+      ${this._renderVisibilityAudit()}
     `;
   }
 
@@ -1683,26 +1914,38 @@ class HaGroupsPanel extends LitElement {
     const g = this._groups[0];
     return html`
       <div class="hero">
-        <h1>Automation conditions</h1>
-        <p>Use the <code>members</code> attribute on each group sensor. Visibility remains UX-only.</p>
+        <h1>Conditionals</h1>
+        <p>As an advanced feature, you can use membership in a group or non-membership in a group as a condition to your automations and scripts.</p>
       </div>
       ${g
-        ? html`<div class="yaml-block">${this._automationYaml(g)}</div>
-            <div class="callout">Entity: <code>sensor.hassio_groups_${g.id}</code> · state = member count · <code>members</code> = user id list</div>`
+        ? html`<div class="yaml-block">${this._automationYaml(g)}</div>`
         : html`<div class="callout">Create a group first to preview the template.</div>`}
       <div class="panel" style="margin-top:18px;padding:18px">
         <h2 class="section-title">All group sensors</h2>
-        <ul class="member-list">
-          ${this._groups.map(
-            (group) => html`<li>
-              <div class="member-meta">
-                <strong>${group.name}</strong>
-                <span>sensor.hassio_groups_${group.id}</span>
-              </div>
-              <span class="pill">${group.member_count ?? (group.member_user_ids || []).length}</span>
-            </li>`
-          )}
-        </ul>
+        <div>
+          ${this._groups.map((group) => {
+            const entityId = `sensor.hassio_groups_${group.id}`;
+            const memberIds = (group.members || []).map((m) => m.id).filter(Boolean);
+            const ids = memberIds.length ? memberIds : (group.member_user_ids || []);
+            const names = (group.members || []).map((m) => m.name || m.id).filter(Boolean);
+            const count = group.member_count ?? ids.length;
+            return html`<div class="sensor-item">
+              <strong>${group.name}</strong>
+              <div class="sensor-entity"><code>${entityId}</code></div>
+              <details class="sensor-more">
+                <summary>More attributes</summary>
+                <ul class="sensor-attrs">
+                  <li><span class="k">State</span><span class="v">${count} (member count)</span></li>
+                  <li><span class="k">Group ID</span><span class="v"><code>${group.id}</code></span></li>
+                  <li><span class="k">Members</span><span class="v">${ids.length ? ids.join(", ") : "—"}</span></li>
+                  <li><span class="k">Member names</span><span class="v">${names.length ? names.join(", ") : "—"}</span></li>
+                  <li><span class="k">Description</span><span class="v">${group.description || "—"}</span></li>
+                  <li><span class="k">Icon</span><span class="v"><code>${group.icon || "mdi:account-group"}</code></span></li>
+                </ul>
+              </details>
+            </div>`;
+          })}
+        </div>
       </div>
     `;
   }

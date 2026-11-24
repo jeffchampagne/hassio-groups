@@ -25,7 +25,11 @@ from .const import (
     PANEL_PATH,
 )
 from .models import GroupExpression, Locator, new_binding, new_group, utcnow_iso
-from .sync import build_dashboard_preview_tree, list_visibility_nodes
+from .sync import (
+    audit_dashboard_user_visibility,
+    build_dashboard_preview_tree,
+    list_visibility_nodes,
+)
 
 
 class _NoRuntime(RuntimeError):
@@ -71,6 +75,7 @@ def async_register_websocket(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, ws_delete_binding)
     websocket_api.async_register_command(hass, ws_sync)
     websocket_api.async_register_command(hass, ws_dashboard_nodes)
+    websocket_api.async_register_command(hass, ws_visibility_audit)
     websocket_api.async_register_command(hass, ws_update_options)
     bucket["websocket"] = True
 
@@ -395,6 +400,36 @@ async def ws_dashboard_nodes(
             "dashboard_url_path": path,
         },
     )
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/visibility_audit",
+        vol.Required("dashboard_url_path"): str,
+    }
+)
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_visibility_audit(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Scan a dashboard for condition:user visibility vs HA Groups bindings."""
+    runtime = _runtime(hass)
+    path = msg["dashboard_url_path"]
+    url_key: str | None = None if path in ("lovelace", "default") else path
+    try:
+        config = await runtime.sync_engine.async_get_lovelace_config(url_key)
+    except Exception as err:  # noqa: BLE001
+        connection.send_error(msg["id"], "dashboard_error", str(err))
+        return
+    report = audit_dashboard_user_visibility(
+        config,
+        dashboard_url_path=path,
+        bindings=list(runtime.store.bindings.values()),
+    )
+    connection.send_result(msg["id"], report)
 
 
 @websocket_api.websocket_command(

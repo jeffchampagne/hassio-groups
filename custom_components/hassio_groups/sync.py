@@ -338,6 +338,181 @@ def list_visibility_nodes(config: dict[str, Any]) -> list[dict[str, Any]]:
     return results
 
 
+def visibility_has_user_condition(visibility: Any) -> bool:
+    """True if any nested condition:user leaf exists in a visibility tree."""
+    if isinstance(visibility, dict):
+        if visibility.get("condition") == USER_CONDITION:
+            return True
+        return any(visibility_has_user_condition(v) for v in visibility.values())
+    if isinstance(visibility, list):
+        return any(visibility_has_user_condition(item) for item in visibility)
+    return False
+
+
+def collect_visibility_user_ids(visibility: Any) -> list[str]:
+    """Unique user IDs from every condition:user leaf (order preserved)."""
+    out: list[str] = []
+
+    def _walk(node: Any) -> None:
+        if isinstance(node, dict):
+            if node.get("condition") == USER_CONDITION:
+                for uid in node.get("users") or []:
+                    s = str(uid)
+                    if s and s not in out:
+                        out.append(s)
+                return
+            for val in node.values():
+                _walk(val)
+        elif isinstance(node, list):
+            for item in node:
+                _walk(item)
+
+    _walk(visibility)
+    return out
+
+
+def _as_locator_dict(locator: Any) -> dict[str, Any]:
+    if locator is None:
+        return {}
+    if hasattr(locator, "to_dict"):
+        return dict(locator.to_dict())
+    if isinstance(locator, dict):
+        return dict(locator)
+    return {}
+
+
+def locators_match(left: Any, right: Any) -> bool:
+    """Match binding locator to a scanned node locator (path preferred over index)."""
+    a = _as_locator_dict(left)
+    b = _as_locator_dict(right)
+    if (a.get("kind") or "card") != (b.get("kind") or "card"):
+        return False
+    path_a = a.get("view_path") or None
+    path_b = b.get("view_path") or None
+    if path_a and path_b:
+        if path_a != path_b:
+            return False
+    elif a.get("view_index") != b.get("view_index"):
+        return False
+    if a.get("section_index") != b.get("section_index"):
+        return False
+    if a.get("card_index") != b.get("card_index"):
+        return False
+    return True
+
+
+def audit_dashboard_user_visibility(
+    config: dict[str, Any],
+    *,
+    dashboard_url_path: str,
+    bindings: list[Any],
+) -> dict[str, Any]:
+    """
+    Scan Lovelace for elements with condition:user visibility and classify
+    each as managed (matched HA Groups binding) or outside/manual.
+    """
+    dash = dashboard_url_path or "lovelace"
+    relevant = []
+    for binding in bindings or []:
+        if hasattr(binding, "dashboard_url_path"):
+            b_path = binding.dashboard_url_path or "lovelace"
+            b_id = binding.id
+            b_label = getattr(binding, "label", "") or ""
+            b_loc = binding.locator
+            b_stale = bool(getattr(binding, "stale", False))
+            b_include = list(getattr(getattr(binding, "expression", None), "include", []) or [])
+            b_exclude = list(getattr(getattr(binding, "expression", None), "exclude", []) or [])
+        elif isinstance(binding, dict):
+            b_path = binding.get("dashboard_url_path") or "lovelace"
+            b_id = binding.get("id")
+            b_label = binding.get("label") or ""
+            b_loc = binding.get("locator")
+            b_stale = bool(binding.get("stale", False))
+            expr = binding.get("expression") or {}
+            b_include = list(expr.get("include") or [])
+            b_exclude = list(expr.get("exclude") or [])
+        else:
+            continue
+        if b_path != dash and not (
+            dash in ("lovelace", "default") and b_path in ("lovelace", "default")
+        ):
+            continue
+        relevant.append(
+            {
+                "id": b_id,
+                "label": b_label,
+                "locator": b_loc,
+                "stale": b_stale,
+                "include": b_include,
+                "exclude": b_exclude,
+            }
+        )
+
+    rows: list[dict[str, Any]] = []
+    for node in list_visibility_nodes(config):
+        # Re-resolve to inspect visibility contents (list_visibility_nodes is metadata-only).
+        loc = Locator.from_dict(node.get("locator") or {})
+        resolved = resolve_locator(config, loc)
+        if not isinstance(resolved, dict):
+            continue
+        visibility = resolved.get("visibility")
+        if not visibility_has_user_condition(visibility):
+            continue
+        users = collect_visibility_user_ids(visibility)
+        matches = [b for b in relevant if locators_match(b["locator"], node.get("locator"))]
+        if matches:
+            primary = matches[0]
+            rows.append(
+                {
+                    "status": "managed",
+                    "kind": node.get("kind"),
+                    "label": node.get("label"),
+                    "breadcrumb": node.get("breadcrumb"),
+                    "type": node.get("type"),
+                    "locator": node.get("locator"),
+                    "fingerprint": node.get("fingerprint") or "",
+                    "lovelace_users": users,
+                    "binding_id": primary["id"],
+                    "binding_label": primary["label"] or primary["id"],
+                    "binding_stale": primary["stale"],
+                    "binding_include": primary["include"],
+                    "binding_exclude": primary["exclude"],
+                    "matched_binding_ids": [m["id"] for m in matches],
+                }
+            )
+        else:
+            rows.append(
+                {
+                    "status": "outside",
+                    "kind": node.get("kind"),
+                    "label": node.get("label"),
+                    "breadcrumb": node.get("breadcrumb"),
+                    "type": node.get("type"),
+                    "locator": node.get("locator"),
+                    "fingerprint": node.get("fingerprint") or "",
+                    "lovelace_users": users,
+                    "binding_id": None,
+                    "binding_label": None,
+                    "binding_stale": False,
+                    "binding_include": [],
+                    "binding_exclude": [],
+                    "matched_binding_ids": [],
+                }
+            )
+
+    managed = sum(1 for r in rows if r["status"] == "managed")
+    outside = sum(1 for r in rows if r["status"] == "outside")
+    return {
+        "dashboard_url_path": dash,
+        "elements": rows,
+        "summary": {
+            "with_user_visibility": len(rows),
+            "managed": managed,
+            "outside": outside,
+            "bindings_on_dashboard": len(relevant),
+        },
+    }
+
 
 def _card_preview(card: dict[str, Any]) -> dict[str, Any]:
     """Compact fields for visual preview tiles."""
