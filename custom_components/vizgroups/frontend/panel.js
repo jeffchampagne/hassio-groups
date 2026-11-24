@@ -3,7 +3,8 @@
  * Friendly names primary; user IDs as subtitle on detail rows only.
  * Visibility is UX, not ACL.
  *
- * UX: edit bindings + visual dashboard preview picker; editable group IDs; MDI icon picker.
+ * UX: edit bindings + visual dashboard preview picker; editable group IDs;
+ * MDI icon picker (loads HA /static/mdi/iconList.json for full-set search).
  * Live hotfix 2026-11-24: member autosave + picker under selected target + table friendly names.
  * Live 2026-11-24: Convert audit Manual Dashboard Config → Viz Groups (PR #10 + normalizeLocator).
  * Live 2026-11-24: Manage visibility breadcrumbs (PR #13).
@@ -17,8 +18,13 @@ import {
 
 const DOMAIN = "vizgroups";
 
-/** Curated MDI set for groups / people / home — type-to-filter; free-text still allowed. */
-const MDI_ICON_CHOICES = [
+const ICON_RESULT_LIMIT = 120;
+
+/**
+ * Suggested icons shown when the browse filter is empty.
+ * Full search uses Home Assistant's /static/mdi/iconList.json (same set as ha-icon-picker).
+ */
+const MDI_ICON_SUGGESTIONS = [
   "mdi:account",
   "mdi:account-circle",
   "mdi:account-group",
@@ -123,6 +129,122 @@ const MDI_ICON_CHOICES = [
   "mdi:close-circle",
 ];
 
+/** @type {Array<{id: string, name: string, keywords: string[], haystack: string}>|null} */
+let _mdiIconIndex = null;
+/** True when the index came from HA's /static/mdi/iconList.json (not curated fallback). */
+let _mdiIconFromHa = false;
+/** @type {Promise<Array<{id: string, name: string, keywords: string[], haystack: string}>>|null} */
+let _mdiIconLoadPromise = null;
+
+function _iconEntryFromName(iconId, keywords = []) {
+  const id = iconId.startsWith("mdi:") || iconId.includes(":")
+    ? iconId
+    : `mdi:${iconId}`;
+  const name = id.includes(":") ? id.split(":").slice(1).join(":") : id;
+  const kw = (keywords || []).map((k) => String(k).toLowerCase());
+  const haystack = [name, ...kw].join(" ").toLowerCase();
+  return { id, name, keywords: kw, haystack };
+}
+
+function _fallbackIconIndex() {
+  return MDI_ICON_SUGGESTIONS.map((id) => _iconEntryFromName(id));
+}
+
+/**
+ * Load the same MDI catalog Home Assistant's icon picker uses
+ * (`hass_frontend/static/mdi/iconList.json` → `/static/mdi/iconList.json`),
+ * plus any custom icon sets that expose getIconList().
+ */
+async function loadMdiIconIndex() {
+  if (_mdiIconIndex) return _mdiIconIndex;
+  if (_mdiIconLoadPromise) return _mdiIconLoadPromise;
+
+  _mdiIconLoadPromise = (async () => {
+    const byId = new Map();
+    let fromHa = false;
+    const add = (entry) => {
+      if (!entry?.id || byId.has(entry.id)) return;
+      byId.set(entry.id, entry);
+    };
+
+    try {
+      const res = await fetch("/static/mdi/iconList.json", {
+        credentials: "same-origin",
+      });
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`);
+      }
+      const data = await res.json();
+      if (!Array.isArray(data)) {
+        throw new Error("iconList.json was not an array");
+      }
+      for (const icon of data) {
+        if (typeof icon === "string") {
+          add(_iconEntryFromName(icon));
+        } else if (icon && typeof icon === "object" && icon.name) {
+          add(_iconEntryFromName(icon.name, icon.keywords));
+        }
+      }
+      fromHa = byId.size > 0;
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        "Viz Groups: could not load /static/mdi/iconList.json; using curated fallback",
+        err,
+      );
+      for (const entry of _fallbackIconIndex()) add(entry);
+    }
+
+    try {
+      const custom = window.customIcons || {};
+      await Promise.all(
+        Object.keys(custom).map(async (prefix) => {
+          const helper = custom[prefix];
+          if (!helper || typeof helper.getIconList !== "function") return;
+          try {
+            const list = await helper.getIconList();
+            if (!Array.isArray(list)) return;
+            for (const icon of list) {
+              const name = typeof icon === "string" ? icon : icon?.name;
+              if (!name) continue;
+              const keywords =
+                typeof icon === "object" && Array.isArray(icon.keywords)
+                  ? icon.keywords
+                  : [];
+              add(_iconEntryFromName(`${prefix}:${name}`, keywords));
+            }
+          } catch (err) {
+            // eslint-disable-next-line no-console
+            console.warn(`Viz Groups: custom icon list failed for ${prefix}`, err);
+          }
+        }),
+      );
+    } catch (_err) {
+      /* customIcons optional */
+    }
+
+    if (!byId.size) {
+      for (const entry of _fallbackIconIndex()) add(entry);
+      fromHa = false;
+    }
+
+    _mdiIconFromHa = fromHa;
+    _mdiIconIndex = Array.from(byId.values()).sort((a, b) =>
+      a.id.localeCompare(b.id),
+    );
+    return _mdiIconIndex;
+  })();
+
+  try {
+    return await _mdiIconLoadPromise;
+  } catch (err) {
+    _mdiIconLoadPromise = null;
+    _mdiIconFromHa = false;
+    _mdiIconIndex = _fallbackIconIndex();
+    return _mdiIconIndex;
+  }
+}
+
 class VizGroupsPanel extends LitElement {
   static properties = {
     hass: { attribute: false },
@@ -137,6 +259,9 @@ class VizGroupsPanel extends LitElement {
     _groupIdManual: { state: true },
     _iconFilter: { state: true },
     _iconPickerOpen: { state: true },
+    _iconCatalogReady: { state: true },
+    _iconCatalogCount: { state: true },
+    _iconCatalogError: { state: true },
     _nodes: { state: true },
     _previewTree: { state: true },
     _nodesBusy: { state: true },
@@ -531,6 +656,9 @@ class VizGroupsPanel extends LitElement {
       background: var(--hg-card); overflow: hidden;
     }
     .icon-picker-toolbar { padding: 10px; border-bottom: 1px solid var(--hg-divider); }
+    .icon-meta {
+      padding: 0 12px 8px; font-size: 0.75rem; color: var(--hg-text-secondary); line-height: 1.35;
+    }
     .icon-grid {
       display: grid; grid-template-columns: repeat(auto-fill, minmax(88px, 1fr));
       gap: 6px; max-height: 220px; overflow: auto; padding: 10px;
@@ -772,6 +900,9 @@ class VizGroupsPanel extends LitElement {
     this._groupIdManual = false;
     this._iconFilter = "";
     this._iconPickerOpen = false;
+    this._iconCatalogReady = false;
+    this._iconCatalogCount = 0;
+    this._iconCatalogError = false;
     this._nodes = [];
     this._previewTree = [];
     this._nodesBusy = false;
@@ -1005,14 +1136,89 @@ class VizGroupsPanel extends LitElement {
     return html`<ha-icon .icon=${name}></ha-icon>`;
   }
 
+  async _ensureIconCatalog() {
+    if (this._iconCatalogReady && _mdiIconIndex) return;
+    try {
+      const index = await loadMdiIconIndex();
+      this._iconCatalogCount = index.length;
+      this._iconCatalogError = !_mdiIconFromHa;
+      this._iconCatalogReady = true;
+    } catch (_err) {
+      this._iconCatalogCount = MDI_ICON_SUGGESTIONS.length;
+      this._iconCatalogError = true;
+      this._iconCatalogReady = true;
+    }
+  }
+
+  _toggleIconPicker() {
+    const next = !this._iconPickerOpen;
+    this._iconPickerOpen = next;
+    if (next) this._ensureIconCatalog();
+  }
+
+  /**
+   * Search the full HA MDI catalog (name + keywords). Empty filter shows suggestions.
+   * @returns {{ icons: string[], total: number, mode: string }}
+   */
   _filteredIcons() {
-    const q = String(this._iconFilter || "").trim().toLowerCase().replace(/^mdi:/, "");
+    const q = String(this._iconFilter || "")
+      .trim()
+      .toLowerCase()
+      .replace(/^mdi:/, "")
+      .replace(/\s+/g, "-");
     const current = this._normalizeIcon(this._draft?.icon);
-    const base = MDI_ICON_CHOICES.includes(current)
-      ? MDI_ICON_CHOICES
-      : [current, ...MDI_ICON_CHOICES];
-    if (!q) return base;
-    return base.filter((icon) => icon.toLowerCase().includes(q));
+    const index = _mdiIconIndex;
+
+    const withCurrent = (ids) => {
+      if (!current || ids.includes(current)) return ids;
+      return [current, ...ids];
+    };
+
+    if (!q) {
+      const suggested = withCurrent([...MDI_ICON_SUGGESTIONS]);
+      return {
+        icons: suggested.slice(0, ICON_RESULT_LIMIT),
+        total: suggested.length,
+        mode: this._iconCatalogReady ? "suggest" : "loading",
+      };
+    }
+
+    if (!index || !index.length) {
+      const fallback = withCurrent(
+        MDI_ICON_SUGGESTIONS.filter((icon) =>
+          icon.toLowerCase().includes(q),
+        ),
+      );
+      return {
+        icons: fallback.slice(0, ICON_RESULT_LIMIT),
+        total: fallback.length,
+        mode: this._iconCatalogReady ? "search" : "loading",
+      };
+    }
+
+    const ranked = [];
+    for (const entry of index) {
+      const name = entry.name.toLowerCase();
+      const parts = name.split("-");
+      const id = entry.id.toLowerCase();
+      let rank = 0;
+      if (parts.includes(q) || name === q) rank = 1;
+      else if (entry.keywords.includes(q)) rank = 2;
+      else if (id.includes(q) || name.includes(q)) rank = 3;
+      else if (entry.keywords.some((word) => word.includes(q))) rank = 4;
+      else if (entry.haystack.includes(q.replace(/-/g, " "))) rank = 5;
+      if (rank) ranked.push({ id: entry.id, rank });
+    }
+    ranked.sort((a, b) => a.rank - b.rank || a.id.localeCompare(b.id));
+    let ids = ranked.map((r) => r.id);
+    if (current && !ids.includes(current) && current.toLowerCase().includes(q)) {
+      ids = [current, ...ids];
+    }
+    return {
+      icons: ids.slice(0, ICON_RESULT_LIMIT),
+      total: ids.length,
+      mode: "search",
+    };
   }
 
   _onNameInput(e) {
@@ -1045,6 +1251,7 @@ class VizGroupsPanel extends LitElement {
     };
     this._userSearch = "";
     this._view = "editor";
+    this._ensureIconCatalog();
   }
 
   _openEditGroup(group) {
@@ -1063,6 +1270,7 @@ class VizGroupsPanel extends LitElement {
     };
     this._userSearch = "";
     this._view = "editor";
+    this._ensureIconCatalog();
   }
 
   _toggleMember(userId) {
@@ -1893,8 +2101,23 @@ class VizGroupsPanel extends LitElement {
   _renderIconPicker() {
     const d = this._draft;
     if (!d) return nothing;
-    const filtered = this._filteredIcons();
+    const { icons: filtered, total, mode } = this._filteredIcons();
     const current = this._normalizeIcon(d.icon);
+    const catalogLabel = this._iconCatalogReady
+      ? (this._iconCatalogError
+        ? `Curated fallback (${this._iconCatalogCount} icons)`
+        : `Full HA MDI set (${this._iconCatalogCount.toLocaleString()} icons)`)
+      : "Loading HA icon catalog…";
+    let meta = catalogLabel;
+    if (mode === "suggest" && this._iconCatalogReady && !this._iconCatalogError) {
+      meta = `${catalogLabel}. Showing suggestions — type to search the full set (names + keywords).`;
+    } else if (mode === "search" && total > filtered.length) {
+      meta = `${catalogLabel}. Showing ${filtered.length} of ${total.toLocaleString()} matches — refine search for more.`;
+    } else if (mode === "search") {
+      meta = `${catalogLabel}. ${total.toLocaleString()} match${total === 1 ? "" : "es"}.`;
+    } else if (mode === "loading") {
+      meta = catalogLabel;
+    }
     return html`
       <div class="field">
         <label>Icon</label>
@@ -1907,26 +2130,33 @@ class VizGroupsPanel extends LitElement {
               this._draft = { ...d, icon: e.target.value };
               this._iconFilter = e.target.value;
               this._iconPickerOpen = true;
+              this._ensureIconCatalog();
             }}
-            @focus=${() => { this._iconPickerOpen = true; }}
+            @focus=${() => {
+              this._iconPickerOpen = true;
+              this._ensureIconCatalog();
+            }}
           />
         </div>
         <button class="btn btn-ghost btn-sm" style="margin-top:8px"
           type="button"
-          @click=${() => { this._iconPickerOpen = !this._iconPickerOpen; }}>
+          @click=${this._toggleIconPicker}>
           ${this._iconPickerOpen ? "Hide icon list" : "Browse icons"}
         </button>
         ${this._iconPickerOpen
           ? html`<div class="icon-picker">
               <div class="icon-picker-toolbar">
                 <input
-                  placeholder="Type to filter (e.g. school, shield, home)"
+                  placeholder="Search all HA icons (e.g. school, shield, user, door)"
                   .value=${this._iconFilter}
                   @input=${(e) => { this._iconFilter = e.target.value; }}
                 />
               </div>
+              <div class="icon-meta">${meta}</div>
               ${filtered.length === 0
-                ? html`<div class="icon-empty">No icons match. Keep typing a full <code>mdi:…</code> name above.</div>`
+                ? html`<div class="icon-empty">${mode === "loading"
+                  ? "Loading icon catalog…"
+                  : html`No icons match. Keep typing a full <code>mdi:…</code> name above.`}</div>`
                 : html`<div class="icon-grid">
                     ${filtered.map(
                       (icon) => html`
