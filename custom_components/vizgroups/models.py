@@ -102,6 +102,9 @@ class Locator:
     view_index: int | None = None
     section_index: int | None = None
     card_index: int | None = None
+    # Indices under the top-level card via nested ``cards`` arrays
+    # (expander / stack / grid / …). Empty = the top-level card itself.
+    card_path: list[int] = field(default_factory=list)
     extra: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -114,6 +117,8 @@ class Locator:
             payload["section_index"] = self.section_index
         if self.card_index is not None:
             payload["card_index"] = self.card_index
+        if self.card_path:
+            payload["card_path"] = list(self.card_path)
         if self.extra:
             payload["extra"] = dict(self.extra)
         return payload
@@ -130,6 +135,7 @@ class Locator:
             view_index=_optional_int(data.get("view_index")),
             section_index=_optional_int(data.get("section_index")),
             card_index=_optional_int(data.get("card_index")),
+            card_path=_int_list(data.get("card_path")),
             extra=dict(data.get("extra") or {}),
         )
 
@@ -275,3 +281,16 @@ def _optional_int(value: Any) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def _int_list(value: Any) -> list[int]:
+    """Coerce a locator card_path to a list of ints (invalid entries dropped)."""
+    if not isinstance(value, list):
+        return []
+    out: list[int] = []
+    for item in value:
+        try:
+            out.append(int(item))
+        except (TypeError, ValueError):
+            continue
+    return out

@@ -1240,6 +1240,8 @@ class VizGroupsPanel extends LitElement {
     else if (locator.view_index != null) bits.push(`view:${locator.view_index}`);
     if (locator.section_index != null) bits.push(`section:${locator.section_index}`);
     if (locator.card_index != null) bits.push(`card:${locator.card_index}`);
+    const nest = Array.isArray(locator.card_path) ? locator.card_path : [];
+    if (nest.length) bits.push(`nest:${nest.join(".")}`);
     if (fingerprint) bits.push(fingerprint.split("|")[0]);
     return bits.join(" · ");
   }
@@ -1247,7 +1249,15 @@ class VizGroupsPanel extends LitElement {
   _nodeKey(node) {
     if (!node?.locator) return "";
     const l = node.locator;
-    return [l.kind, l.view_path || l.view_index, l.section_index, l.card_index, node.fingerprint || ""].join("|");
+    const nest = Array.isArray(l.card_path) ? l.card_path.join(".") : "";
+    return [l.kind, l.view_path || l.view_index, l.section_index, l.card_index, nest, node.fingerprint || ""].join("|");
+  }
+
+  _normalizeCardPath(path) {
+    if (!Array.isArray(path)) return [];
+    return path
+      .map((n) => Number(n))
+      .filter((n) => Number.isInteger(n) && n >= 0);
   }
 
   _openDashboardPicker() {
@@ -1354,7 +1364,9 @@ class VizGroupsPanel extends LitElement {
           locator: { ...n.locator },
           fingerprint: n.fingerprint || "",
           has_visibility: !!n.has_visibility,
+          cards: [],
         };
+        let bucket = view.cards;
         if (loc.section_index != null && loc.section_index !== "") {
           const sKey = String(loc.section_index);
           if (!view._sectionMap.has(sKey)) {
@@ -1374,9 +1386,26 @@ class VizGroupsPanel extends LitElement {
             view._sectionMap.set(sKey, section);
             view.sections.push(section);
           }
-          view._sectionMap.get(sKey).cards.push(card);
+          bucket = view._sectionMap.get(sKey).cards;
+        }
+        const nest = this._normalizeCardPath(loc.card_path);
+        if (!nest.length) {
+          bucket.push(card);
         } else {
-          view.cards.push(card);
+          // Parents are emitted before children; walk to the parent container.
+          let parent = bucket.find(
+            (c) => c.locator?.card_index === loc.card_index
+              && !(c.locator?.card_path && c.locator.card_path.length),
+          );
+          for (let i = 0; i < nest.length - 1; i++) {
+            parent = parent?.cards?.[nest[i]];
+          }
+          if (parent) {
+            if (!parent.cards) parent.cards = [];
+            parent.cards.push(card);
+          } else {
+            bucket.push(card);
+          }
         }
       }
     }
@@ -1466,6 +1495,7 @@ class VizGroupsPanel extends LitElement {
         view_index: loc.view_index ?? 0,
         section_index: loc.section_index ?? 0,
         card_index: loc.card_index ?? 0,
+        card_path: this._normalizeCardPath(loc.card_path),
       },
       merge_mode: binding.merge_mode || "ensure_user_branch",
       fingerprint: binding.fingerprint || "",
@@ -1506,6 +1536,8 @@ class VizGroupsPanel extends LitElement {
       card_index: Number(d.locator?.card_index ?? 0),
     };
     if (d.locator?.view_path) locator.view_path = d.locator.view_path;
+    const nest = this._normalizeCardPath(d.locator?.card_path);
+    if (nest.length) locator.card_path = nest;
     await this._call("save_binding", {
       binding_id: d.binding_id || undefined,
       dashboard_url_path: d.dashboard_url_path,
@@ -1900,18 +1932,26 @@ class VizGroupsPanel extends LitElement {
 
   _renderPreviewCard(card) {
     const key = this._nodeKey(card);
-    return html`<button type="button"
-      class="preview-card ${key === this._selectedNodeKey ? "selected" : ""} ${key === this._hoverKey ? "hot" : ""}"
-      @mouseenter=${() => (this._hoverKey = key)}
-      @mouseleave=${() => (this._hoverKey = "")}
-      @click=${(e) => { e.stopPropagation(); this._selectNode(card); }}>
-      <ha-icon .icon=${card.icon || "mdi:card"}></ha-icon>
-      <div>
-        <strong>${card.label}</strong>
-        ${card.snippet ? html`<span class="snip">${card.snippet}</span>` : nothing}
-        <span class="meta">${card.type || "card"}${card.has_visibility ? " · visibility" : ""}</span>
-      </div>
-    </button>`;
+    const nested = Array.isArray(card.cards) ? card.cards : [];
+    return html`<div class="preview-card-wrap">
+      <button type="button"
+        class="preview-card ${key === this._selectedNodeKey ? "selected" : ""} ${key === this._hoverKey ? "hot" : ""}"
+        @mouseenter=${() => (this._hoverKey = key)}
+        @mouseleave=${() => (this._hoverKey = "")}
+        @click=${(e) => { e.stopPropagation(); this._selectNode(card); }}>
+        <ha-icon .icon=${card.icon || "mdi:card"}></ha-icon>
+        <div>
+          <strong>${card.label}</strong>
+          ${card.snippet ? html`<span class="snip">${card.snippet}</span>` : nothing}
+          <span class="meta">${card.type || "card"}${card.has_visibility ? " · visibility" : ""}</span>
+        </div>
+      </button>
+      ${nested.length
+        ? html`<div class="preview-cards nested" style="margin:6px 0 0 18px">
+            ${nested.map((child) => this._renderPreviewCard(child))}
+          </div>`
+        : nothing}
+    </div>`;
   }
 
   _renderLocatorPicker() {

@@ -92,9 +92,19 @@ def resolve_locator(config: dict[str, Any], locator: Locator) -> dict[str, Any] 
         if not isinstance(cards, list) or locator.card_index is None:
             return None
         idx = locator.card_index
-        if 0 <= idx < len(cards) and isinstance(cards[idx], dict):
-            return cards[idx]
-        return None
+        if not (0 <= idx < len(cards) and isinstance(cards[idx], dict)):
+            return None
+        node: dict[str, Any] = cards[idx]
+        # Walk nested container cards (expander / stack / grid / …).
+        for step in list(locator.card_path or []):
+            children = node.get("cards")
+            if not isinstance(children, list) or not (0 <= step < len(children)):
+                return None
+            child = children[step]
+            if not isinstance(child, dict):
+                return None
+            node = child
+        return node
 
     # kind == other: best-effort walk using extra path tokens later; for now view fallback
     return view
@@ -243,8 +253,91 @@ def _node_detail(node: dict[str, Any]) -> str:
     return " · ".join(bits)
 
 
+# Max depth when walking nested container cards (expander / stacks / grid / …).
+_MAX_CARD_NESTING = 20
+
+
+def _card_locator(
+    *,
+    v_idx: int,
+    view_path: Any,
+    section_index: int | None,
+    card_index: int,
+    card_path: list[int],
+) -> dict[str, Any]:
+    loc: dict[str, Any] = {
+        "kind": "card",
+        "view_index": v_idx,
+        "view_path": view_path,
+        "card_index": card_index,
+    }
+    if section_index is not None:
+        loc["section_index"] = section_index
+    if card_path:
+        loc["card_path"] = list(card_path)
+    return loc
+
+
+def _emit_card_tree(
+    results: list[dict[str, Any]],
+    card: dict[str, Any],
+    *,
+    v_idx: int,
+    view_path: Any,
+    section_index: int | None,
+    card_index: int,
+    card_path: list[int],
+    breadcrumb: str,
+    depth: int = 0,
+) -> None:
+    """Append a card node and recurse into nested ``cards`` containers."""
+    card_label = _node_label(card, fallback=f"Card {card_index if not card_path else card_path[-1]}")
+    crumb = f"{breadcrumb} › {card_label}" if breadcrumb else card_label
+    results.append(
+        {
+            "kind": "card",
+            "label": card_label,
+            "detail": _node_detail(card) or f"card #{card_index}",
+            "breadcrumb": crumb,
+            "type": card.get("type") or "card",
+            "locator": _card_locator(
+                v_idx=v_idx,
+                view_path=view_path,
+                section_index=section_index,
+                card_index=card_index,
+                card_path=card_path,
+            ),
+            "fingerprint": fingerprint_node(card),
+            "has_visibility": isinstance(card.get("visibility"), list),
+        }
+    )
+    if depth >= _MAX_CARD_NESTING:
+        return
+    nested = card.get("cards")
+    if not isinstance(nested, list):
+        return
+    for n_idx, child in enumerate(nested):
+        if not isinstance(child, dict):
+            continue
+        _emit_card_tree(
+            results,
+            child,
+            v_idx=v_idx,
+            view_path=view_path,
+            section_index=section_index,
+            card_index=card_index,
+            card_path=card_path + [n_idx],
+            breadcrumb=crumb,
+            depth=depth + 1,
+        )
+
+
 def list_visibility_nodes(config: dict[str, Any]) -> list[dict[str, Any]]:
-    """Enumerate visibility-capable nodes with locator hints (for UI browser)."""
+    """Enumerate visibility-capable nodes with locator hints (for UI browser).
+
+    Recurses into nested container cards (expander, vertical-stack,
+    horizontal-stack, grid, and any other card that exposes a ``cards`` list).
+    """
     results: list[dict[str, Any]] = []
     views = config.get("views")
     if not isinstance(views, list):
@@ -299,47 +392,30 @@ def list_visibility_nodes(config: dict[str, Any]) -> list[dict[str, Any]]:
                     for c_idx, card in enumerate(cards):
                         if not isinstance(card, dict):
                             continue
-                        card_label = _node_label(card, fallback=f"Card {c_idx}")
-                        results.append(
-                            {
-                                "kind": "card",
-                                "label": card_label,
-                                "detail": _node_detail(card) or f"card #{c_idx}",
-                                "breadcrumb": f"{view_label} › {section_label} › {card_label}",
-                                "type": card.get("type") or "card",
-                                "locator": {
-                                    "kind": "card",
-                                    "view_index": v_idx,
-                                    "view_path": view_path,
-                                    "section_index": s_idx,
-                                    "card_index": c_idx,
-                                },
-                                "fingerprint": fingerprint_node(card),
-                                "has_visibility": isinstance(card.get("visibility"), list),
-                            }
+                        _emit_card_tree(
+                            results,
+                            card,
+                            v_idx=v_idx,
+                            view_path=view_path,
+                            section_index=s_idx,
+                            card_index=c_idx,
+                            card_path=[],
+                            breadcrumb=f"{view_label} › {section_label}",
                         )
         cards = view.get("cards")
         if isinstance(cards, list):
             for c_idx, card in enumerate(cards):
                 if not isinstance(card, dict):
                     continue
-                card_label = _node_label(card, fallback=f"Card {c_idx}")
-                results.append(
-                    {
-                        "kind": "card",
-                        "label": card_label,
-                        "detail": _node_detail(card) or f"card #{c_idx}",
-                        "breadcrumb": f"{view_label} › {card_label}",
-                        "type": card.get("type") or "card",
-                        "locator": {
-                            "kind": "card",
-                            "view_index": v_idx,
-                            "view_path": view_path,
-                            "card_index": c_idx,
-                        },
-                        "fingerprint": fingerprint_node(card),
-                        "has_visibility": isinstance(card.get("visibility"), list),
-                    }
+                _emit_card_tree(
+                    results,
+                    card,
+                    v_idx=v_idx,
+                    view_path=view_path,
+                    section_index=None,
+                    card_index=c_idx,
+                    card_path=[],
+                    breadcrumb=view_label,
                 )
     return results
 
@@ -387,6 +463,22 @@ def _as_locator_dict(locator: Any) -> dict[str, Any]:
     return {}
 
 
+def _locator_card_path(payload: dict[str, Any]) -> list[int]:
+    """Normalize nested card_path (top-level or legacy extra)."""
+    raw = payload.get("card_path")
+    if raw is None and isinstance(payload.get("extra"), dict):
+        raw = payload["extra"].get("card_path")
+    if not isinstance(raw, list):
+        return []
+    out: list[int] = []
+    for item in raw:
+        try:
+            out.append(int(item))
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
 def locators_match(left: Any, right: Any) -> bool:
     """Match binding locator to a scanned node locator (path preferred over index)."""
     a = _as_locator_dict(left)
@@ -403,6 +495,8 @@ def locators_match(left: Any, right: Any) -> bool:
     if a.get("section_index") != b.get("section_index"):
         return False
     if a.get("card_index") != b.get("card_index"):
+        return False
+    if _locator_card_path(a) != _locator_card_path(b):
         return False
     return True
 
@@ -605,8 +699,62 @@ def _card_preview(card: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _preview_card_node(
+    card: dict[str, Any],
+    *,
+    v_idx: int,
+    view_path: Any,
+    section_index: int | None,
+    card_index: int,
+    card_path: list[int],
+    breadcrumb_prefix: str,
+    depth: int = 0,
+) -> dict[str, Any]:
+    """Build a preview tile for a card, including nested container children."""
+    preview = _card_preview(card)
+    crumb = f"{breadcrumb_prefix} › {preview['label']}"
+    node: dict[str, Any] = {
+        "kind": "card",
+        **preview,
+        "breadcrumb": crumb,
+        "locator": _card_locator(
+            v_idx=v_idx,
+            view_path=view_path,
+            section_index=section_index,
+            card_index=card_index,
+            card_path=card_path,
+        ),
+        "fingerprint": fingerprint_node(card),
+        "has_visibility": isinstance(card.get("visibility"), list),
+        "cards": [],
+    }
+    if depth >= _MAX_CARD_NESTING:
+        return node
+    nested = card.get("cards")
+    if isinstance(nested, list):
+        for n_idx, child in enumerate(nested):
+            if not isinstance(child, dict):
+                continue
+            node["cards"].append(
+                _preview_card_node(
+                    child,
+                    v_idx=v_idx,
+                    view_path=view_path,
+                    section_index=section_index,
+                    card_index=card_index,
+                    card_path=card_path + [n_idx],
+                    breadcrumb_prefix=crumb,
+                    depth=depth + 1,
+                )
+            )
+    return node
+
+
 def build_dashboard_preview_tree(config: dict[str, Any]) -> list[dict[str, Any]]:
-    """Hierarchical view → section → card tree for the visual locator picker."""
+    """Hierarchical view → section → card tree for the visual locator picker.
+
+    Nested container cards (expander / stacks / grid / …) appear as children.
+    """
     tree: list[dict[str, Any]] = []
     views = config.get("views")
     if not isinstance(views, list):
@@ -664,22 +812,16 @@ def build_dashboard_preview_tree(config: dict[str, Any]) -> list[dict[str, Any]]
                     for c_idx, card in enumerate(cards):
                         if not isinstance(card, dict):
                             continue
-                        preview = _card_preview(card)
                         section_node["cards"].append(
-                            {
-                                "kind": "card",
-                                **preview,
-                                "breadcrumb": f"{view_label} › {section_label} › {preview['label']}",
-                                "locator": {
-                                    "kind": "card",
-                                    "view_index": v_idx,
-                                    "view_path": view_path,
-                                    "section_index": s_idx,
-                                    "card_index": c_idx,
-                                },
-                                "fingerprint": fingerprint_node(card),
-                                "has_visibility": isinstance(card.get("visibility"), list),
-                            }
+                            _preview_card_node(
+                                card,
+                                v_idx=v_idx,
+                                view_path=view_path,
+                                section_index=s_idx,
+                                card_index=c_idx,
+                                card_path=[],
+                                breadcrumb_prefix=f"{view_label} › {section_label}",
+                            )
                         )
                 view_node["sections"].append(section_node)
 
@@ -688,21 +830,16 @@ def build_dashboard_preview_tree(config: dict[str, Any]) -> list[dict[str, Any]]
             for c_idx, card in enumerate(cards):
                 if not isinstance(card, dict):
                     continue
-                preview = _card_preview(card)
                 view_node["cards"].append(
-                    {
-                        "kind": "card",
-                        **preview,
-                        "breadcrumb": f"{view_label} › {preview['label']}",
-                        "locator": {
-                            "kind": "card",
-                            "view_index": v_idx,
-                            "view_path": view_path,
-                            "card_index": c_idx,
-                        },
-                        "fingerprint": fingerprint_node(card),
-                        "has_visibility": isinstance(card.get("visibility"), list),
-                    }
+                    _preview_card_node(
+                        card,
+                        v_idx=v_idx,
+                        view_path=view_path,
+                        section_index=None,
+                        card_index=c_idx,
+                        card_path=[],
+                        breadcrumb_prefix=view_label,
+                    )
                 )
         tree.append(view_node)
     return tree
