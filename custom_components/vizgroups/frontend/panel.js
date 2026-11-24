@@ -438,10 +438,40 @@ class VizGroupsPanel extends LitElement {
     }
     .layout-2 { display: grid; grid-template-columns: minmax(180px, 0.72fr) minmax(0, 1.28fr); gap: 18px; }
     .layout-3 {
-      display: grid; grid-template-columns: minmax(200px, 0.85fr) 1fr 1fr; gap: 18px; align-items: start;
+      display: grid; grid-template-columns: minmax(200px, 0.85fr) 1fr 1fr; gap: 18px; align-items: stretch;
     }
     @media (max-width: 1100px) {
       .layout-3 { grid-template-columns: 1fr; }
+    }
+    /* Wide editor: Members + Users panels fill remaining viewport; lists scroll inside. */
+    @media (min-width: 1101px) {
+      .layout-3 {
+        min-height: calc(100vh - 10rem);
+      }
+      .layout-3 > .panel.panel-flush {
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+        overflow: hidden;
+      }
+      .layout-3 > .panel.panel-flush > .members-col-head,
+      .layout-3 > .panel.panel-flush > .editor-col-head,
+      .layout-3 > .panel.panel-flush > .user-search,
+      .layout-3 > .panel.panel-flush > .paste-box {
+        flex-shrink: 0;
+      }
+      .layout-3 .panel-col-body {
+        max-height: none;
+        flex: 1 1 auto;
+        min-height: 0;
+        overflow: auto;
+      }
+      .layout-3 .panel-col-body.members-body {
+        overflow: auto;
+      }
+      .layout-3 .user-picker {
+        max-height: none;
+      }
     }
     .panel-col-body { max-height: min(62vh, 560px); overflow: auto; }
     .member-list .row-actions { margin-left: auto; }
