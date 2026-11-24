@@ -20,6 +20,9 @@ const DOMAIN = "vizgroups";
 
 const ICON_RESULT_LIMIT = 120;
 
+/** sessionStorage key prefix for table column sort prefs (asc/desc). */
+const SORT_PREF_PREFIX = "vizgroups.sort.";
+
 /**
  * Suggested icons shown when the browse filter is empty.
  * Full search uses Home Assistant's /static/mdi/iconList.json (same set as ha-icon-picker).
@@ -285,6 +288,9 @@ class VizGroupsPanel extends LitElement {
     _pasteDraft: { state: true },
     _expandedNested: { state: true },
     _overlapPrompt: { state: true },
+    _groupsSort: { state: true },
+    _bindingsSort: { state: true },
+    _auditSort: { state: true },
   };
 
   static styles = css`
@@ -391,6 +397,15 @@ class VizGroupsPanel extends LitElement {
     th {
       text-align: left; font-size: 0.72rem; letter-spacing: 0.07em; text-transform: uppercase;
       color: var(--hg-text-secondary); padding: 14px 16px; border-bottom: 1px solid var(--hg-divider);
+    }
+    th.sortable {
+      cursor: pointer; user-select: none; white-space: nowrap;
+    }
+    th.sortable:hover { color: var(--hg-text); }
+    th.sortable.sorted { color: var(--hg-text); }
+    th.sortable .sort-ind {
+      display: inline-block; margin-left: 6px; font-size: 0.85em;
+      opacity: 0.85; text-transform: none; letter-spacing: 0;
     }
     td { padding: 14px 16px; border-bottom: 1px solid var(--hg-divider); vertical-align: middle; }
     tr:last-child td { border-bottom: 0; }
@@ -1002,6 +1017,9 @@ class VizGroupsPanel extends LitElement {
     this._overlapPrompt = null;
     this._memberSaveSeq = 0;
     this._memberSavePromise = null;
+    this._groupsSort = this._readSortPref("groups", "name");
+    this._bindingsSort = this._readSortPref("bindings", "element");
+    this._auditSort = this._readSortPref("audit", "element");
   }
 
   connectedCallback() {
@@ -1083,7 +1101,137 @@ class VizGroupsPanel extends LitElement {
     return this._groups.find((g) => g.id === this._selectedGroupId) || null;
   }
 
+  _readSortPref(tableKey, defaultCol, defaultDir = "asc") {
+    try {
+      const raw = sessionStorage.getItem(SORT_PREF_PREFIX + tableKey);
+      if (!raw) return { col: defaultCol, dir: defaultDir };
+      const parsed = JSON.parse(raw);
+      if (
+        parsed
+        && typeof parsed.col === "string"
+        && (parsed.dir === "asc" || parsed.dir === "desc")
+      ) {
+        return { col: parsed.col, dir: parsed.dir };
+      }
+    } catch {
+      /* ignore quota / private mode */
+    }
+    return { col: defaultCol, dir: defaultDir };
+  }
 
+  _writeSortPref(tableKey, col, dir) {
+    try {
+      sessionStorage.setItem(
+        SORT_PREF_PREFIX + tableKey,
+        JSON.stringify({ col, dir })
+      );
+    } catch {
+      /* ignore */
+    }
+  }
+
+  /**
+   * Toggle sort for a table column. Same column flips asc/desc; new column
+   * starts ascending. Prefs persist in sessionStorage for the tab session.
+   */
+  _toggleTableSort(tableKey, col) {
+    const prop = `_${tableKey}Sort`;
+    const cur = this[prop] || { col, dir: "asc" };
+    const next =
+      cur.col === col
+        ? { col, dir: cur.dir === "asc" ? "desc" : "asc" }
+        : { col, dir: "asc" };
+    this[prop] = next;
+    this._writeSortPref(tableKey, next.col, next.dir);
+  }
+
+  _renderSortTh(tableKey, col, label) {
+    const sort = this[`_${tableKey}Sort`] || { col: "", dir: "asc" };
+    const active = sort.col === col;
+    const aria = active
+      ? (sort.dir === "asc" ? "ascending" : "descending")
+      : "none";
+    return html`
+      <th
+        class="sortable ${active ? "sorted" : ""}"
+        aria-sort=${aria}
+        @click=${() => this._toggleTableSort(tableKey, col)}
+      >
+        <span class="sort-label">${label}</span>
+        ${active
+          ? html`<span class="sort-ind" aria-hidden="true">${sort.dir === "asc" ? "↑" : "↓"}</span>`
+          : nothing}
+      </th>
+    `;
+  }
+
+  _compareSortValues(a, b, dir) {
+    const mul = dir === "desc" ? -1 : 1;
+    if (a == null && b == null) return 0;
+    if (a == null) return 1 * mul;
+    if (b == null) return -1 * mul;
+    if (typeof a === "number" && typeof b === "number") {
+      return (a - b) * mul;
+    }
+    return String(a).localeCompare(String(b), undefined, { sensitivity: "base" }) * mul;
+  }
+
+  _sortedGroups() {
+    const { dir } = this._groupsSort || { col: "name", dir: "asc" };
+    const rows = [...this._groups];
+    rows.sort((a, b) => {
+      const av = String(a?.name || a?.id || "").toLowerCase();
+      const bv = String(b?.name || b?.id || "").toLowerCase();
+      return this._compareSortValues(av, bv, dir);
+    });
+    return rows;
+  }
+
+  _bindingSortValue(b, col) {
+    if (col === "dashboard") {
+      return this._dashboardTitle(b.dashboard_url_path).toLowerCase();
+    }
+    if (col === "status") {
+      // OK before stale when ascending
+      return b.stale ? 1 : 0;
+    }
+    // element (default)
+    return this._displayLabel(b.label || b.id || "").toLowerCase();
+  }
+
+  _sortedBindings() {
+    const { col, dir } = this._bindingsSort || { col: "element", dir: "asc" };
+    const rows = [...this._bindings];
+    rows.sort((a, b) =>
+      this._compareSortValues(
+        this._bindingSortValue(a, col),
+        this._bindingSortValue(b, col),
+        dir
+      )
+    );
+    return rows;
+  }
+
+  _auditSortValue(row, col) {
+    if (col === "source") {
+      return row.status === "managed" ? "viz groups" : "manual dashboard config";
+    }
+    // element (default)
+    return this._displayLabel(row.label || "").toLowerCase();
+  }
+
+  _sortedAuditRows(rows) {
+    const { col, dir } = this._auditSort || { col: "element", dir: "asc" };
+    const sorted = [...(rows || [])];
+    sorted.sort((a, b) =>
+      this._compareSortValues(
+        this._auditSortValue(a, col),
+        this._auditSortValue(b, col),
+        dir
+      )
+    );
+    return sorted;
+  }
 
   _locatorsMatch(a = {}, b = {}) {
     const kind = a.kind || b.kind || "card";
@@ -2373,7 +2521,8 @@ class VizGroupsPanel extends LitElement {
   }
 
   _renderGroups() {
-    const groups = this._groups;
+    const allGroups = this._groups;
+    const groups = this._sortedGroups();
     return html`
       <div class="hero">
         <h1>Groups</h1>
@@ -2381,7 +2530,7 @@ class VizGroupsPanel extends LitElement {
       </div>
       <div class="stat-row">
         <div class="stat"><div class="n">${this._users.length}</div><div class="l">Users</div></div>
-        <div class="stat"><div class="n">${groups.length}</div><div class="l">Groups</div></div>
+        <div class="stat"><div class="n">${allGroups.length}</div><div class="l">Groups</div></div>
         <div class="stat"><div class="n">${this._bindings.length}</div><div class="l">${this._bindings.length === 1 ? "Dashboard Element Managed" : "Dashboard Elements Managed"}</div></div>
       </div>
       <div class="toolbar">
@@ -2389,7 +2538,10 @@ class VizGroupsPanel extends LitElement {
       </div>
       <div class="panel">
         <table>
-          <thead><tr><th>Name</th><th>Members</th></tr></thead>
+          <thead><tr>
+            ${this._renderSortTh("groups", "name", "Name")}
+            <th>Members</th>
+          </tr></thead>
           <tbody>
             ${groups.length === 0
               ? html`<tr><td colspan="2">No groups yet. Create one to get started.</td></tr>`
@@ -3085,7 +3237,7 @@ class VizGroupsPanel extends LitElement {
       : [{ url_path: "lovelace", title: "Overview" }];
     const current = this._auditDashboard || dashes[0]?.url_path || "lovelace";
     const report = this._auditReport;
-    const rows = report?.elements || [];
+    const rows = this._sortedAuditRows(report?.elements || []);
     const summary = report?.summary;
     return html`
       <div class="panel" style="margin-top:18px;padding:18px">
@@ -3118,10 +3270,10 @@ class VizGroupsPanel extends LitElement {
           <table>
             <thead>
               <tr>
-                <th>Element</th>
+                ${this._renderSortTh("audit", "element", "Element")}
                 <th>Type</th>
                 <th>Home Assistant Users</th>
-                <th>Source</th>
+                ${this._renderSortTh("audit", "source", "Source")}
               </tr>
             </thead>
             <tbody>
@@ -3236,11 +3388,18 @@ class VizGroupsPanel extends LitElement {
       ${this._renderBindingForm()}
       <div class="panel">
         <table>
-          <thead><tr><th>Element</th><th>Dashboard</th><th>Include</th><th>Exclude</th><th>Status</th><th></th></tr></thead>
+          <thead><tr>
+            ${this._renderSortTh("bindings", "element", "Element")}
+            ${this._renderSortTh("bindings", "dashboard", "Dashboard")}
+            <th>Include</th>
+            <th>Exclude</th>
+            ${this._renderSortTh("bindings", "status", "Status")}
+            <th></th>
+          </tr></thead>
           <tbody>
             ${this._bindings.length === 0
               ? html`<tr><td colspan="6">No visibility rules yet.</td></tr>`
-              : this._bindings.map(
+              : this._sortedBindings().map(
                   (b) => {
                     const label = this._displayLabel(b.label || b.id);
                     const crumb = this._displayLabel(
