@@ -859,6 +859,21 @@ class VizGroupsPanel extends LitElement {
     return this._groups.find((g) => g.id === this._selectedGroupId) || null;
   }
 
+  /** Dashboard title from WS list_dashboards payload; fall back to url_path. */
+  _dashboardTitle(urlPath) {
+    const path = urlPath || "lovelace";
+    const dash = this._dashboards.find((d) => d.url_path === path);
+    if (dash?.title) return dash.title;
+    if (path === "lovelace") return "Overview";
+    return path;
+  }
+
+  /** Group friendly name; fall back to id when the group is missing. */
+  _groupName(groupId) {
+    const g = this._groups.find((x) => x.id === groupId);
+    return g?.name || groupId;
+  }
+
   _initials(name) {
     const parts = String(name || "?").trim().split(/\s+/).slice(0, 2);
     return parts.map((p) => p[0]?.toUpperCase() || "").join("") || "?";
@@ -2042,21 +2057,15 @@ class VizGroupsPanel extends LitElement {
             ? html`<div class="selected-node">
                 <div class="k">Selected target</div>
                 <strong>${this._selectedNodeLabel}</strong>
-                <div style="margin-top:6px;font-size:0.8rem;color:var(--muted)">${d.dashboard_url_path || ""}</div>
+                <div style="margin-top:6px;font-size:0.8rem;color:var(--muted)">${this._dashboardTitle(d.dashboard_url_path)}</div>
                 ${(d.include || []).length
                   ? html`<div class="chip-row" style="margin-top:10px">
-                      ${(d.include || []).map((id) => {
-                        const g = this._groups.find((x) => x.id === id);
-                        return html`<span class="pill">${g?.name || id}</span>`;
-                      })}
+                      ${(d.include || []).map((id) => html`<span class="pill">${this._groupName(id)}</span>`)}
                     </div>`
                   : nothing}
                 ${(d.exclude || []).length
                   ? html`<div class="chip-row" style="margin-top:6px">
-                      ${(d.exclude || []).map((id) => {
-                        const g = this._groups.find((x) => x.id === id);
-                        return html`<span class="pill warn">not ${g?.name || id}</span>`;
-                      })}
+                      ${(d.exclude || []).map((id) => html`<span class="pill warn">not ${this._groupName(id)}</span>`)}
                     </div>`
                   : nothing}
               </div>`
@@ -2271,9 +2280,9 @@ class VizGroupsPanel extends LitElement {
               : this._bindings.map(
                   (b) => html`<tr class="row-click" @click=${() => this._openEditBinding(b)}>
                     <td>${b.label || b.id}</td>
-                    <td>${b.dashboard_url_path}</td>
-                    <td><div class="chip-row">${(b.expression?.include || []).map((id) => html`<span class="pill">${id}</span>`)}</div></td>
-                    <td><div class="chip-row">${(b.expression?.exclude || []).map((id) => html`<span class="pill warn">${id}</span>`)}</div></td>
+                    <td>${this._dashboardTitle(b.dashboard_url_path)}</td>
+                    <td><div class="chip-row">${(b.expression?.include || []).map((id) => html`<span class="pill">${this._groupName(id)}</span>`)}</div></td>
+                    <td><div class="chip-row">${(b.expression?.exclude || []).map((id) => html`<span class="pill warn">${this._groupName(id)}</span>`)}</div></td>
                     <td>${b.stale ? html`<span class="pill warn">stale</span>` : html`<span class="pill ok">OK</span>`}</td>
                     <td>
                       <div class="row-actions" @click=${(e) => e.stopPropagation()}>
