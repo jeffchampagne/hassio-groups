@@ -782,6 +782,8 @@ class VizGroupsPanel extends LitElement {
     this._clipStatusTimer = null;
     this._pasteOpen = false;
     this._pasteDraft = "";
+    this._memberSaveSeq = 0;
+    this._memberSavePromise = null;
   }
 
   connectedCallback() {
@@ -956,24 +958,88 @@ class VizGroupsPanel extends LitElement {
   _toggleMember(userId) {
     if (!this._draft) return;
     const set = new Set(this._draft.member_user_ids || []);
-    if (set.has(userId)) set.delete(userId);
+    const removing = set.has(userId);
+    if (removing) set.delete(userId);
     else set.add(userId);
     this._draft = { ...this._draft, member_user_ids: [...set] };
+    void this._persistMembers({
+      successMsg: removing ? "Member removed" : "Member added",
+    });
   }
 
   _addMember(userId) {
     if (!this._draft || !userId) return;
     const set = new Set(this._draft.member_user_ids || []);
+    if (set.has(userId)) return;
     set.add(userId);
     this._draft = { ...this._draft, member_user_ids: [...set] };
+    void this._persistMembers({ successMsg: "Member added" });
   }
 
   _removeMember(userId) {
     if (!this._draft) return;
+    const before = this._draft.member_user_ids || [];
+    if (!before.includes(userId)) return;
     this._draft = {
       ...this._draft,
-      member_user_ids: (this._draft.member_user_ids || []).filter((id) => id !== userId),
+      member_user_ids: before.filter((id) => id !== userId),
     };
+    void this._persistMembers({ successMsg: "Member removed" });
+  }
+
+  /**
+   * Persist membership for an existing group immediately (no full-panel busy).
+   * Uses saved group details so unsaved name/description/icon edits stay draft-only.
+   * New (unsaved) groups stay local until Save.
+   */
+  async _persistMembers({ successMsg = "Members saved" } = {}) {
+    const groupId = this._selectedGroupId;
+    if (!groupId || !this._draft) return false;
+    // Full Save owns the write — skip to avoid racing / double-saving.
+    if (this._busy) return false;
+
+    const existing = this._groups.find((g) => g.id === groupId);
+    if (!existing) return false;
+
+    const seq = ++this._memberSaveSeq;
+    const member_user_ids = [...(this._draft.member_user_ids || [])];
+    const run = (async () => {
+      try {
+        const result = await this.hass.connection.sendMessagePromise({
+          type: `${DOMAIN}/save_group`,
+          name: existing.name,
+          group_id: groupId,
+          previous_group_id: groupId,
+          description: existing.description || "",
+          icon: existing.icon || "mdi:account-group",
+          member_user_ids,
+        });
+        if (seq !== this._memberSaveSeq) return false;
+        if (result && (result.groups || result.users)) this._data = result;
+        this._error = "";
+        this._setClipStatus(successMsg);
+        return true;
+      } catch (err) {
+        if (seq !== this._memberSaveSeq) return false;
+        this._error = err?.message || String(err);
+        this._setClipStatus("Could not save members");
+        // Revert membership to last known saved snapshot; keep detail draft edits.
+        const saved = (this._data?.groups || []).find((g) => g.id === groupId);
+        if (saved && this._draft && this._selectedGroupId === groupId) {
+          this._draft = {
+            ...this._draft,
+            member_user_ids: [...(saved.member_user_ids || [])],
+          };
+        }
+        return false;
+      }
+    })();
+    this._memberSavePromise = run;
+    try {
+      return await run;
+    } finally {
+      if (this._memberSavePromise === run) this._memberSavePromise = null;
+    }
   }
 
 
@@ -1081,6 +1147,11 @@ class VizGroupsPanel extends LitElement {
       }
     }
     this._draft = { ...this._draft, member_user_ids: [...set] };
+    if (added) {
+      void this._persistMembers({
+        successMsg: `Added ${added} member${added === 1 ? "" : "s"}`,
+      });
+    }
     return added;
   }
 
@@ -1193,6 +1264,15 @@ class VizGroupsPanel extends LitElement {
     if (!groupId) {
       this._error = "Group ID is required";
       return;
+    }
+    // Let any in-flight membership autosave finish (or be superseded by this write).
+    this._memberSaveSeq += 1;
+    if (this._memberSavePromise) {
+      try {
+        await this._memberSavePromise;
+      } catch (_err) {
+        /* membership error already surfaced; full save continues */
+      }
     }
     await this._call("save_group", {
       name: this._draft.name.trim(),
@@ -1764,7 +1844,9 @@ class VizGroupsPanel extends LitElement {
               .value=${this._userSearch}
               @input=${(e) => (this._userSearch = e.target.value)}
             />
-            <span class="hint" style="display:block;margin-top:8px">Click to add a user to the group. Paste selects IDs copied from Visibility audit.</span>
+            <span class="hint" style="display:block;margin-top:8px">${editing
+              ? "Click to add — membership saves immediately. Detail fields still use Save."
+              : "Click to add a user to the group. Paste selects IDs copied from Visibility audit. Save the group to keep members."}</span>
           </div>
           <div class="user-picker panel-col-body">
             ${this._users
