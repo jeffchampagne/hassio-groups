@@ -45,13 +45,30 @@ _LOGGER = logging.getLogger(__name__)
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 def _reload_ws_modules() -> None:
-    """Reload panel/sync from disk so new websocket commands register without Core restart."""
+    """Reload integration modules from disk without a Core restart.
+
+    Order matters: models → sync → lovelace_sync → panel. Also refresh
+    ``LovelaceSyncEngine`` / ``GroupsStore`` symbols imported into this module
+    so config-entry reload picks up breadcrumb backfill and related fixes.
+    """
     pkg = __package__ or "custom_components.vizgroups"
-    # Reload dependency first, then panel (registers commands).
-    for mod_name in (f"{pkg}.sync", f"{pkg}.panel"):
+    for mod_name in (
+        f"{pkg}.models",
+        f"{pkg}.sync",
+        f"{pkg}.lovelace_sync",
+        f"{pkg}.panel",
+    ):
         mod = sys.modules.get(mod_name)
         if mod is not None:
             importlib.reload(mod)
+    # Re-bind names this module imported at load time.
+    this = sys.modules[__name__]
+    ls = sys.modules.get(f"{pkg}.lovelace_sync")
+    if ls is not None and hasattr(ls, "LovelaceSyncEngine"):
+        this.LovelaceSyncEngine = ls.LovelaceSyncEngine
+    st = sys.modules.get(f"{pkg}.store")
+    if st is not None and hasattr(st, "GroupsStore"):
+        this.GroupsStore = st.GroupsStore
 
 
 
@@ -59,7 +76,6 @@ def _reload_ws_modules() -> None:
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     """Register panel + websocket early so the sidebar appears after setup."""
     hass.data.setdefault(DOMAIN, {})
-    _reload_ws_modules()
     from .panel import async_register_panel as _reg_panel
     from .panel import async_register_websocket as _reg_ws
     _reg_ws(hass)
@@ -69,34 +85,43 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Viz Groups from a config entry."""
-    store = GroupsStore(hass)
-    await store.async_load()
+    import logging
 
-    runtime = GroupsRuntime(hass, store, entry)
-    hass.data.setdefault(DOMAIN, {})
-    hass.data[DOMAIN][entry.entry_id] = runtime
+    _log = logging.getLogger(__name__)
+    try:
+        store = GroupsStore(hass)
+        await store.async_load()
 
-    _reload_ws_modules()
-    from .panel import async_register_panel as _reg_panel
-    from .panel import async_register_websocket as _reg_ws
-    _reg_ws(hass)
-    if not hass.data[DOMAIN].get("panel"):
+        runtime = GroupsRuntime(hass, store, entry)
+        hass.data.setdefault(DOMAIN, {})
+        hass.data[DOMAIN][entry.entry_id] = runtime
+
+        from .panel import async_register_panel as _reg_panel
+        from .panel import async_register_websocket as _reg_ws
+        _reg_ws(hass)
         await _reg_panel(hass)
 
-    await runtime.async_prune_users()
-    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
-    runtime.register_services()
+        await runtime.async_prune_users()
+        await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+        runtime.register_services()
 
-    entry.async_on_unload(entry.add_update_listener(_async_reload_options))
-    return True
+        entry.async_on_unload(entry.add_update_listener(_async_reload_options))
+        return True
+    except Exception:
+        _log.exception("Viz Groups async_setup_entry failed")
+        raise
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    try:
+        unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    except Exception:  # noqa: BLE001
+        # Platforms may never have loaded (not_loaded → reload).
+        unload_ok = True
     runtime = hass.data.get(DOMAIN, {}).pop(entry.entry_id, None)
     if runtime:
         runtime.unregister_services_if_last()
-    return unload_ok
+    return True if unload_ok is None else bool(unload_ok)
 
 
 async def _async_reload_options(hass: HomeAssistant, entry: ConfigEntry) -> None:
