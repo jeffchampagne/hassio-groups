@@ -505,9 +505,15 @@ def _as_locator_dict(locator: Any) -> dict[str, Any]:
 
 
 def locators_match(left: Any, right: Any) -> bool:
-    """Match binding locator to a scanned node locator (path preferred over index)."""
+    """Match binding locator to a scanned node locator (path preferred over index).
+
+    Only compare indices that apply to the locator kind. Section bindings must
+    not fail to match because a stale ``card_index: 0`` leaked from the picker
+    (audit section rows omit ``card_index``).
+    """
     a = _as_locator_dict(left)
     b = _as_locator_dict(right)
+    kind = a.get("kind") or b.get("kind") or "card"
     if (a.get("kind") or "card") != (b.get("kind") or "card"):
         return False
     path_a = a.get("view_path") or None
@@ -517,8 +523,12 @@ def locators_match(left: Any, right: Any) -> bool:
             return False
     elif a.get("view_index") != b.get("view_index"):
         return False
+    if kind == "view":
+        return True
     if a.get("section_index") != b.get("section_index"):
         return False
+    if kind == "section":
+        return True
     if a.get("card_index") != b.get("card_index"):
         return False
     return True
