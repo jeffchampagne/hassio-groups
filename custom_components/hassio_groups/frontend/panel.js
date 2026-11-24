@@ -3,7 +3,7 @@
  * Friendly names primary; user IDs as subtitle on detail rows only.
  * Visibility is UX, not ACL.
  *
- * UX: edit existing bindings + re-sync; auto-slug group IDs; MDI icon picker.
+ * UX: edit bindings + visual locator browser; auto-slug/editable group IDs; MDI icon picker.
  */
 import {
   LitElement,
@@ -134,6 +134,13 @@ class HaGroupsPanel extends LitElement {
     _groupIdManual: { state: true },
     _iconFilter: { state: true },
     _iconPickerOpen: { state: true },
+    _nodes: { state: true },
+    _nodesBusy: { state: true },
+    _nodeFilter: { state: true },
+    _nodeKindFilter: { state: true },
+    _nodeBrowserOpen: { state: true },
+    _selectedNodeLabel: { state: true },
+    _advancedLocatorOpen: { state: true },
   };
 
   static styles = css`
@@ -334,6 +341,45 @@ class HaGroupsPanel extends LitElement {
       color: var(--muted); max-width: 100%;
     }
     .icon-empty { padding: 16px; color: var(--muted); font-size: 0.85rem; text-align: center; }
+    .node-browser {
+      margin-top: 10px; border: 1px solid var(--line); border-radius: 12px;
+      background: rgba(255,255,255,0.72); overflow: hidden;
+    }
+    .node-browser-toolbar {
+      display: flex; gap: 8px; flex-wrap: wrap; padding: 10px; border-bottom: 1px solid var(--line);
+      align-items: center;
+    }
+    .node-browser-toolbar input, .node-browser-toolbar select {
+      font: inherit; padding: 8px 10px; border-radius: 10px; border: 1px solid var(--line);
+      background: rgba(255,255,255,0.9); color: var(--ink);
+    }
+    .node-browser-toolbar input { flex: 1; min-width: 140px; }
+    .node-list { max-height: 320px; overflow: auto; }
+    .node-row {
+      display: grid; grid-template-columns: 64px 1fr; gap: 10px; width: 100%;
+      text-align: left; border: 0; border-bottom: 1px solid var(--line);
+      background: transparent; padding: 12px 14px; cursor: pointer; font: inherit; color: inherit;
+    }
+    .node-row:hover, .node-row.selected { background: rgba(31,107,79,0.08); }
+    .node-row:last-child { border-bottom: 0; }
+    .node-kind {
+      font-size: 0.68rem; letter-spacing: 0.06em; text-transform: uppercase;
+      color: var(--accent-deep); font-weight: 600; padding-top: 2px;
+    }
+    .node-main strong { display: block; font-weight: 600; }
+    .node-main span { display: block; font-size: 0.8rem; color: var(--muted); margin-top: 2px; }
+    .selected-node {
+      margin-top: 10px; padding: 12px 14px; border-radius: 12px; border: 1px solid rgba(31,107,79,0.28);
+      background: rgba(31,107,79,0.08);
+    }
+    .selected-node .k { font-size: 0.72rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
+    details.advanced {
+      margin-top: 12px; border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px;
+      background: rgba(255,255,255,0.45);
+    }
+    details.advanced > summary {
+      cursor: pointer; font-size: 0.85rem; color: var(--ink-soft); font-weight: 600;
+    }
   `;
 
   constructor() {
@@ -349,6 +395,13 @@ class HaGroupsPanel extends LitElement {
     this._groupIdManual = false;
     this._iconFilter = "";
     this._iconPickerOpen = false;
+    this._nodes = [];
+    this._nodesBusy = false;
+    this._nodeFilter = "";
+    this._nodeKindFilter = "all";
+    this._nodeBrowserOpen = false;
+    this._selectedNodeLabel = "";
+    this._advancedLocatorOpen = false;
   }
 
   connectedCallback() {
@@ -412,6 +465,10 @@ class HaGroupsPanel extends LitElement {
 
   get _bindings() {
     return this._data?.bindings || [];
+  }
+
+  get _dashboards() {
+    return this._data?.dashboards || [];
   }
 
   get _selectedGroup() {
@@ -525,34 +582,118 @@ class HaGroupsPanel extends LitElement {
       return;
     }
     const groupId =
-      this._selectedGroupId ||
       this._draft.group_id?.trim() ||
       this._slugify(this._draft.name) ||
       undefined;
+    if (!groupId) {
+      this._error = "Group ID is required";
+      return;
+    }
     await this._call("save_group", {
       name: this._draft.name.trim(),
       group_id: groupId,
+      previous_group_id: this._selectedGroupId || undefined,
       description: this._draft.description || "",
       icon: this._normalizeIcon(this._draft.icon),
       member_user_ids: this._draft.member_user_ids || [],
     });
     this._view = "groups";
     this._draft = null;
+    this._selectedGroupId = null;
     this._iconPickerOpen = false;
   }
 
   async _deleteGroup() {
-    if (!this._draft?.group_id) return;
-    if (!confirm(`Delete group “${this._draft.name}”?`)) return;
-    await this._call("delete_group", { group_id: this._draft.group_id });
+    const gid = this._selectedGroupId || this._draft?.group_id;
+    if (!gid) return;
+    if (!confirm(`Delete group “${this._draft?.name || gid}”?`)) return;
+    await this._call("delete_group", { group_id: gid });
     this._view = "groups";
     this._draft = null;
+    this._selectedGroupId = null;
+  }
+
+  _resetNodeBrowser() {
+    this._nodes = [];
+    this._nodeFilter = "";
+    this._nodeKindFilter = "all";
+    this._nodeBrowserOpen = false;
+    this._selectedNodeLabel = "";
+    this._advancedLocatorOpen = false;
+    this._nodesBusy = false;
+  }
+
+  _locatorSummary(locator = {}, fingerprint = "", label = "") {
+    if (label) return label;
+    if (!locator) return "";
+    const bits = [locator.kind || "node"];
+    if (locator.view_path) bits.push(`path:${locator.view_path}`);
+    else if (locator.view_index != null) bits.push(`view:${locator.view_index}`);
+    if (locator.section_index != null) bits.push(`section:${locator.section_index}`);
+    if (locator.card_index != null) bits.push(`card:${locator.card_index}`);
+    if (fingerprint) bits.push(fingerprint.split("|")[0]);
+    return bits.join(" · ");
+  }
+
+  async _loadDashboardNodes(forceOpen = true) {
+    const path = this._bindingDraft?.dashboard_url_path?.trim();
+    if (!path) {
+      this._error = "Set a dashboard path before browsing";
+      return;
+    }
+    this._nodesBusy = true;
+    this._error = "";
+    if (forceOpen) this._nodeBrowserOpen = true;
+    try {
+      const result = await this.hass.connection.sendMessagePromise({
+        type: `${DOMAIN}/dashboard_nodes`,
+        dashboard_url_path: path,
+      });
+      this._nodes = result?.nodes || [];
+    } catch (err) {
+      this._nodes = [];
+      this._error = err?.message || String(err);
+    } finally {
+      this._nodesBusy = false;
+    }
+  }
+
+  _filteredNodes() {
+    const q = String(this._nodeFilter || "").trim().toLowerCase();
+    const kind = this._nodeKindFilter || "all";
+    return (this._nodes || []).filter((n) => {
+      if (kind !== "all" && n.kind !== kind) return false;
+      if (!q) return true;
+      const hay = `${n.label || ""} ${n.detail || ""} ${n.breadcrumb || ""} ${n.type || ""} ${n.kind || ""}`.toLowerCase();
+      return hay.includes(q);
+    });
+  }
+
+  _selectNode(node) {
+    if (!node?.locator) return;
+    const loc = { ...node.locator };
+    this._bindingDraft = {
+      ...this._bindingDraft,
+      locator: loc,
+      fingerprint: node.fingerprint || "",
+      label: this._bindingDraft.label || node.label || "",
+    };
+    this._selectedNodeLabel = node.breadcrumb || node.label || this._locatorSummary(loc, node.fingerprint);
+    this._nodeBrowserOpen = false;
+  }
+
+  _onDashboardPathChange(e) {
+    const path = e.target.value;
+    this._bindingDraft = { ...this._bindingDraft, dashboard_url_path: path };
+    this._nodes = [];
+    this._selectedNodeLabel = "";
   }
 
   _openBindingCreate() {
+    this._resetNodeBrowser();
     this._bindingDraft = {
       binding_id: "",
-      dashboard_url_path: "lovelace",
+      dashboard_url_path: (this._dashboards[0]?.url_path) || "lovelace",
       include: [],
       exclude: [],
       label: "",
@@ -581,6 +722,14 @@ class HaGroupsPanel extends LitElement {
       merge_mode: binding.merge_mode || "ensure_user_branch",
       fingerprint: binding.fingerprint || "",
     };
+    this._resetNodeBrowser();
+    this._selectedNodeLabel = this._locatorSummary(
+      this._bindingDraft.locator,
+      this._bindingDraft.fingerprint,
+      binding.label || "",
+    );
+    // Manual indices already filled — show advanced if no fingerprint/path cues
+    this._advancedLocatorOpen = !binding.fingerprint;
     this._view = "bindings";
     this._error = "";
   }
@@ -786,19 +935,20 @@ class HaGroupsPanel extends LitElement {
           <div class="field"><label>Group ID (slug)</label>
             <input
               .value=${d.group_id}
-              ?disabled=${editing}
               placeholder=${suggested || "auto-from-name"}
               @input=${this._onGroupIdInput}
             />
-            ${editing
-              ? html`<span class="hint">ID is fixed after creation.</span>`
-              : html`<span class="hint">
-                  ${this._groupIdManual
-                    ? "Custom ID — clear and rename to resume auto-slug."
-                    : suggested
-                      ? html`Auto-generated as <code>${suggested}</code> — edit to override.`
-                      : "Filled automatically from the name."}
-                </span>`}
+            <span class="hint">
+              ${editing
+                ? (d.group_id && d.group_id !== this._selectedGroupId
+                    ? html`Renaming from <code>${this._selectedGroupId}</code> → <code>${d.group_id}</code> (bindings update).`
+                    : "Editable — change to rename; bindings that reference this group update.")
+                : this._groupIdManual
+                  ? "Custom ID — clear the field and retype the name to resume auto-slug."
+                  : suggested
+                    ? html`Auto-generated as <code>${suggested}</code> — edit to override.`
+                    : "Filled automatically from the name."}
+            </span>
           </div>
           <div class="field"><label>Description</label>
             <textarea rows="3" .value=${d.description}
@@ -851,6 +1001,44 @@ class HaGroupsPanel extends LitElement {
     `;
   }
 
+  _renderNodeBrowser() {
+    const nodes = this._filteredNodes();
+    const currentFp = this._bindingDraft?.fingerprint || "";
+    return html`<div class="node-browser">
+      <div class="node-browser-toolbar">
+        <input
+          placeholder="Filter by title, type, entity…"
+          .value=${this._nodeFilter}
+          @input=${(e) => (this._nodeFilter = e.target.value)}
+        />
+        <select .value=${this._nodeKindFilter}
+          @change=${(e) => (this._nodeKindFilter = e.target.value)}>
+          <option value="all">All</option>
+          <option value="view">Views</option>
+          <option value="section">Sections</option>
+          <option value="card">Cards</option>
+        </select>
+      </div>
+      ${this._nodesBusy
+        ? html`<div class="icon-empty">Loading dashboard elements…</div>`
+        : nodes.length === 0
+          ? html`<div class="icon-empty">No elements match. Try another filter or dashboard.</div>`
+          : html`<div class="node-list">
+              ${nodes.map(
+                (n) => html`<button type="button"
+                  class="node-row ${n.fingerprint && n.fingerprint === currentFp ? "selected" : ""}"
+                  @click=${() => this._selectNode(n)}>
+                  <div class="node-kind">${n.kind}</div>
+                  <div class="node-main">
+                    <strong>${n.label}</strong>
+                    <span>${n.breadcrumb || n.detail || n.type || ""}</span>
+                  </div>
+                </button>`
+              )}
+            </div>`}
+    </div>`;
+  }
+
   _renderBindingForm() {
     const d = this._bindingDraft;
     if (!d) return nothing;
@@ -867,9 +1055,20 @@ class HaGroupsPanel extends LitElement {
           <div class="field"><label>Label</label>
             <input .value=${d.label || ""} @input=${(e) => (this._bindingDraft = { ...d, label: e.target.value })} />
           </div>
-          <div class="field"><label>Dashboard url path</label>
-            <input .value=${d.dashboard_url_path}
-              @input=${(e) => (this._bindingDraft = { ...d, dashboard_url_path: e.target.value })} />
+          <div class="field"><label>Dashboard</label>
+            ${this._dashboards.length
+              ? html`<select .value=${d.dashboard_url_path} @change=${this._onDashboardPathChange}>
+                  ${this._dashboards.map(
+                    (dash) => html`<option value=${dash.url_path}
+                      ?selected=${dash.url_path === d.dashboard_url_path}>
+                      ${dash.title || dash.url_path}${dash.mode ? ` (${dash.mode})` : ""}
+                    </option>`
+                  )}
+                </select>
+                <span class="hint">Or type a path below if missing from the list.</span>
+                <input style="margin-top:8px" .value=${d.dashboard_url_path}
+                  @input=${this._onDashboardPathChange} />`
+              : html`<input .value=${d.dashboard_url_path} @input=${this._onDashboardPathChange} />`}
           </div>
           <div class="field"><label>Include groups (AND)</label>
             <select multiple style="min-height:110px"
@@ -895,26 +1094,29 @@ class HaGroupsPanel extends LitElement {
           </div>
         </div>
         <div>
-          <div class="field"><label>Locator kind</label>
-            <select .value=${d.locator?.kind || "card"}
-              @change=${(e) => (this._bindingDraft = { ...d, locator: { ...d.locator, kind: e.target.value } })}>
-              <option value="view">view</option>
-              <option value="section">section</option>
-              <option value="card">card</option>
-              <option value="other">other</option>
-            </select>
-          </div>
-          <div class="field"><label>View index</label>
-            <input type="number" .value=${d.locator?.view_index ?? 0}
-              @input=${(e) => (this._bindingDraft = { ...d, locator: { ...d.locator, view_index: Number(e.target.value) } })} />
-          </div>
-          <div class="field"><label>Section index</label>
-            <input type="number" .value=${d.locator?.section_index ?? 0}
-              @input=${(e) => (this._bindingDraft = { ...d, locator: { ...d.locator, section_index: Number(e.target.value) } })} />
-          </div>
-          <div class="field"><label>Card index</label>
-            <input type="number" .value=${d.locator?.card_index ?? 0}
-              @input=${(e) => (this._bindingDraft = { ...d, locator: { ...d.locator, card_index: Number(e.target.value) } })} />
+          <div class="field"><label>Target element</label>
+            ${this._selectedNodeLabel
+              ? html`<div class="selected-node">
+                  <div class="k">Selected</div>
+                  <strong>${this._selectedNodeLabel}</strong>
+                  <div style="margin-top:6px;font-size:0.8rem;color:var(--muted)">
+                    ${d.locator?.kind || "?"}
+                    ${d.locator?.view_path ? html` · ${d.locator.view_path}` : nothing}
+                    ${d.fingerprint ? html` · fp set` : nothing}
+                  </div>
+                </div>`
+              : html`<div class="hint" style="margin:0 0 8px">Pick a view, section, or card from the dashboard.</div>`}
+            <div class="toolbar" style="margin:8px 0 0">
+              <button class="btn btn-ghost btn-sm" type="button" ?disabled=${this._nodesBusy || this._busy}
+                @click=${() => this._loadDashboardNodes(true)}>
+                ${this._nodesBusy ? "Loading…" : this._nodeBrowserOpen ? "Refresh elements" : "Browse elements"}
+              </button>
+              ${this._nodeBrowserOpen
+                ? html`<button class="btn btn-ghost btn-sm" type="button"
+                    @click=${() => (this._nodeBrowserOpen = false)}>Hide</button>`
+                : nothing}
+            </div>
+            ${this._nodeBrowserOpen ? this._renderNodeBrowser() : nothing}
           </div>
           <div class="field"><label>Merge mode</label>
             <select .value=${d.merge_mode || "ensure_user_branch"}
@@ -923,19 +1125,48 @@ class HaGroupsPanel extends LitElement {
               <option value="replace_user_condition">replace_user_condition</option>
             </select>
           </div>
-          <div class="field"><label>Fingerprint (optional)</label>
-            <input .value=${d.fingerprint || ""}
-              @input=${(e) => (this._bindingDraft = { ...d, fingerprint: e.target.value })} />
-          </div>
+          <details class="advanced" ?open=${this._advancedLocatorOpen}
+            @toggle=${(e) => (this._advancedLocatorOpen = e.target.open)}>
+            <summary>Advanced — manual locator indices</summary>
+            <div class="field" style="margin-top:12px"><label>Locator kind</label>
+              <select .value=${d.locator?.kind || "card"}
+                @change=${(e) => (this._bindingDraft = { ...d, locator: { ...d.locator, kind: e.target.value } })}>
+                <option value="view">view</option>
+                <option value="section">section</option>
+                <option value="card">card</option>
+                <option value="other">other</option>
+              </select>
+            </div>
+            <div class="field"><label>View path (optional)</label>
+              <input .value=${d.locator?.view_path || ""}
+                @input=${(e) => (this._bindingDraft = { ...d, locator: { ...d.locator, view_path: e.target.value } })} />
+            </div>
+            <div class="field"><label>View index</label>
+              <input type="number" .value=${d.locator?.view_index ?? 0}
+                @input=${(e) => (this._bindingDraft = { ...d, locator: { ...d.locator, view_index: Number(e.target.value) } })} />
+            </div>
+            <div class="field"><label>Section index</label>
+              <input type="number" .value=${d.locator?.section_index ?? 0}
+                @input=${(e) => (this._bindingDraft = { ...d, locator: { ...d.locator, section_index: Number(e.target.value) } })} />
+            </div>
+            <div class="field"><label>Card index</label>
+              <input type="number" .value=${d.locator?.card_index ?? 0}
+                @input=${(e) => (this._bindingDraft = { ...d, locator: { ...d.locator, card_index: Number(e.target.value) } })} />
+            </div>
+            <div class="field"><label>Fingerprint</label>
+              <input .value=${d.fingerprint || ""}
+                @input=${(e) => (this._bindingDraft = { ...d, fingerprint: e.target.value })} />
+            </div>
+          </details>
           <div class="toolbar">
             <button class="btn btn-primary" ?disabled=${this._busy} @click=${this._saveBinding}>
               ${editing ? "Save & sync" : "Save binding"}
             </button>
-            <button class="btn btn-ghost" @click=${() => (this._bindingDraft = null)}>Cancel</button>
+            <button class="btn btn-ghost" @click=${() => { this._bindingDraft = null; this._resetNodeBrowser(); }}>Cancel</button>
           </div>
         </div>
       </div>
-      <div class="callout warn">Dashboard browser / live node picker is stubbed for the next phase — enter locator indices manually for now. Saving an edit re-syncs Lovelace.</div>
+      <div class="callout">Browse picks the locator + fingerprint automatically. Saving re-syncs Lovelace visibility.</div>
     </div>`;
   }
 
