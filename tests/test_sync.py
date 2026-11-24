@@ -5,8 +5,12 @@ from __future__ import annotations
 from vizgroups.const import MERGE_ENSURE_USER_BRANCH, MERGE_REPLACE_USER
 from vizgroups.models import Locator
 from vizgroups.sync import (
+    _card_preview,
+    _node_label,
     apply_binding_to_config,
     apply_visibility_users,
+    audit_dashboard_user_visibility,
+    build_dashboard_preview_tree,
     fingerprint_node,
     list_visibility_nodes,
     make_user_condition,
@@ -199,6 +203,125 @@ def test_list_visibility_nodes_covers_kinds() -> None:
     kinds = {n["kind"] for n in nodes}
     assert {"view", "section", "card"} <= kinds
     assert any(n["label"] == "Apartment Door" for n in nodes)
+
+
+def test_mushroom_template_primary_label() -> None:
+    """Mushroom template cards store the visible title in ``primary``."""
+    card = {
+        "type": "custom:mushroom-template-card",
+        "primary": "John's Apartment",
+        "icon": "mdi:home",
+        "visibility": [{"condition": "user", "users": ["u1"]}],
+    }
+    assert _node_label(card, fallback="Card 1") == "John's Apartment"
+    assert "John's Apartment" in fingerprint_node(card)
+    assert fingerprint_node(card).startswith("custom:mushroom-template-card|")
+    preview = _card_preview(card)
+    assert preview["label"] == "John's Apartment"
+    assert preview["type"] == "custom:mushroom-template-card"
+    assert preview["label"] != preview["type"]
+
+    cfg = {
+        "views": [
+            {
+                "title": "Building",
+                "path": "home",
+                "sections": [{"cards": [card]}],
+            }
+        ]
+    }
+    nodes = list_visibility_nodes(cfg)
+    mushroom = next(n for n in nodes if n["kind"] == "card")
+    assert mushroom["label"] == "John's Apartment"
+    tree = build_dashboard_preview_tree(cfg)
+    assert tree[0]["sections"][0]["cards"][0]["label"] == "John's Apartment"
+
+
+def test_section_label_from_child_heading_card() -> None:
+    """Untitled sections inherit the first type:heading child (Overview pattern)."""
+    section = {
+        "type": "grid",
+        "visibility": [{"condition": "user", "users": ["u1"]}],
+        "cards": [
+            {"type": "heading", "heading": "Common Area Lighting", "icon": "mdi:lightbulb"},
+            {"type": "custom:mushroom-light-card", "entity": "light.a"},
+        ],
+    }
+    assert _node_label(section, fallback="Section 2") == "Common Area Lighting"
+
+    cfg = {
+        "views": [
+            {
+                "title": "Building",
+                "sections": [section],
+            }
+        ]
+    }
+    nodes = list_visibility_nodes(cfg)
+    sec = next(n for n in nodes if n["kind"] == "section")
+    assert sec["label"] == "Common Area Lighting"
+    audit = audit_dashboard_user_visibility(
+        cfg, dashboard_url_path="lovelace", bindings=[]
+    )
+    assert audit["elements"][0]["label"] == "Common Area Lighting"
+
+
+def test_untitled_card_inherits_preceding_section_heading() -> None:
+    """Grid/controls after a heading use that heading when they have no title."""
+    cfg = {
+        "views": [
+            {
+                "title": "Building",
+                "sections": [
+                    {
+                        "cards": [
+                            {"type": "heading", "heading": "Building Mode"},
+                            {
+                                "type": "grid",
+                                "cards": [
+                                    {"type": "custom:button-card", "name": "Open"},
+                                    {"type": "custom:button-card", "name": "Closed"},
+                                ],
+                                "visibility": [
+                                    {"condition": "user", "users": ["u1"]}
+                                ],
+                            },
+                        ]
+                    }
+                ],
+            }
+        ]
+    }
+    nodes = list_visibility_nodes(cfg)
+    grid = next(
+        n
+        for n in nodes
+        if n["kind"] == "card" and n.get("type") == "grid"
+    )
+    assert grid["label"] == "Building Mode"
+    assert grid["label"] != "Open"
+
+
+def test_node_label_prefers_title_fields_over_type() -> None:
+    assert (
+        _node_label(
+            {"type": "custom:mushroom-template-card", "primary": "Doorbell"},
+            fallback="Card",
+        )
+        == "Doorbell"
+    )
+    assert (
+        _node_label(
+            {"type": "heading", "heading": "Lights"},
+            fallback="Card",
+        )
+        == "Lights"
+    )
+    # No title-ish fields → contextual fallback, not the type string.
+    assert (
+        _node_label({"type": "custom:mushroom-template-card"}, fallback="Card 3")
+        == "Card 3"
+    )
 
 
 def test_replace_mode_keeps_non_user_top_level() -> None:
