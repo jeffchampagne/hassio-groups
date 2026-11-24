@@ -35,7 +35,7 @@ EVENT_MEMBERSHIP_CHANGED = f"{DOMAIN}_membership_changed"
 
 PANEL_PATH = "vizgroups"
 PANEL_ELEMENT = "vizgroups-panel"
-PANEL_MODULE_URL = f"/{DOMAIN}/panel.js?v=members1"
+PANEL_MODULE_URL = f"/{DOMAIN}/panel.js?v=members2"
 PANEL_ICON = "mdi:account-group"
 
 MERGE_REPLACE_USER = "replace_user_condition"

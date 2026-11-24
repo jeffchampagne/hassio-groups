@@ -274,6 +274,7 @@ class VizGroupsPanel extends LitElement {
     _advancedLocatorOpen: { state: true },
     _excludeOpen: { state: true },
     _userSearch: { state: true },
+    _addMemberFilter: { state: true },
     _auditDashboard: { state: true },
     _auditBusy: { state: true },
     _auditReport: { state: true },
@@ -882,6 +883,12 @@ class VizGroupsPanel extends LitElement {
     }
     .group-chip.on .dot { background: var(--hg-primary); }
     .group-chip.warn.on .dot { background: var(--hg-warning); }
+    .add-member-filters {
+      display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px;
+    }
+    .add-member-filters .group-chip {
+      padding: 6px 12px; font-size: 0.85rem;
+    }
     details.exclude-block {
       margin: 12px 0 4px; border-top: 1px dashed var(--hg-divider); padding-top: 10px;
     }
@@ -953,6 +960,7 @@ class VizGroupsPanel extends LitElement {
     this._advancedLocatorOpen = false;
     this._excludeOpen = false;
     this._userSearch = "";
+    this._addMemberFilter = { users: true, groups: true };
     this._auditDashboard = "";
     this._auditBusy = false;
     this._auditReport = null;
@@ -1360,6 +1368,7 @@ class VizGroupsPanel extends LitElement {
       members: [],
     };
     this._userSearch = "";
+    this._addMemberFilter = { users: true, groups: true };
     this._view = "editor";
     this._ensureIconCatalog();
   }
@@ -1380,8 +1389,19 @@ class VizGroupsPanel extends LitElement {
       members: this._membersFromGroup(group),
     };
     this._userSearch = "";
+    this._addMemberFilter = { users: true, groups: true };
     this._view = "editor";
     this._ensureIconCatalog();
+  }
+
+  _toggleAddMemberFilter(kind) {
+    const cur = this._addMemberFilter || { users: true, groups: true };
+    const next = { ...cur, [kind]: !cur[kind] };
+    // Keep at least one filter on so the column never goes blank by accident.
+    if (!next.users && !next.groups) {
+      next[kind] = true;
+    }
+    this._addMemberFilter = next;
   }
 
   _toggleNestedExpand(groupId) {
@@ -1410,9 +1430,38 @@ class VizGroupsPanel extends LitElement {
     if (groupId === (this._selectedGroupId || this._draft.group_id)) return;
     const members = this._normalizeDraftMembers(this._draft.members || []);
     if (members.some((m) => m.type === "group" && m.id === groupId)) return;
+
+    const nested = (this._groups || []).find((g) => g.id === groupId);
+    const nestedEffective = new Set(
+      (nested?.effective_user_ids || []).map((id) => String(id))
+    );
+    const directUserIds = members
+      .filter((m) => m.type === "user")
+      .map((m) => m.id);
+    const overlap = directUserIds.filter((id) => nestedEffective.has(String(id)));
+
+    let next = [...members, { type: "group", id: groupId }];
+    if (overlap.length) {
+      const nestedName = nested?.name || groupId;
+      const labels = overlap.map((id) => {
+        const u = (this._users || []).find((x) => x.id === id);
+        return u?.name || id;
+      });
+      const list = labels.map((n) => `• ${n}`).join("\n");
+      const remove = confirm(
+        `These users are already direct members and also belong to “${nestedName}”:\n${list}\n\n` +
+          `Remove them from this group so they only inherit via the nested group?\n\n` +
+          `OK = remove overlapping users\nCancel = keep them as direct members`
+      );
+      if (remove) {
+        const drop = new Set(overlap.map(String));
+        next = next.filter((m) => !(m.type === "user" && drop.has(String(m.id))));
+      }
+    }
+
     this._draft = {
       ...this._draft,
-      members: [...members, { type: "group", id: groupId }],
+      members: next,
     };
     void this._persistMembers({ successMsg: "Group added" });
   }
@@ -2427,6 +2476,15 @@ class VizGroupsPanel extends LitElement {
     const editing = !!this._selectedGroupId;
     const suggested = this._slugify(d.name);
     const q = (this._userSearch || "").trim().toLowerCase();
+    const kindFilter = this._addMemberFilter || { users: true, groups: true };
+    const showUsers = !!kindFilter.users;
+    const showGroups = !!kindFilter.groups;
+    const availableUsers = this._users
+      .filter((u) => !selectedUsers.has(u.id))
+      .filter((u) => {
+        if (!q) return true;
+        return (u.name || "").toLowerCase().includes(q) || (u.id || "").toLowerCase().includes(q);
+      });
     const availableGroups = this._groups
       .filter((g) => g.id !== selfId && !selectedGroups.has(g.id))
       .filter((g) => {
@@ -2510,41 +2568,59 @@ class VizGroupsPanel extends LitElement {
               .value=${this._userSearch}
               @input=${(e) => (this._userSearch = e.target.value)}
             />
+            <div class="add-member-filters" role="group" aria-label="Show member kinds">
+              <button type="button"
+                class="group-chip ${showUsers ? "on" : ""}"
+                aria-pressed=${showUsers ? "true" : "false"}
+                @click=${() => this._toggleAddMemberFilter("users")}>
+                <span class="dot"></span>Users
+              </button>
+              <button type="button"
+                class="group-chip ${showGroups ? "on" : ""}"
+                aria-pressed=${showGroups ? "true" : "false"}
+                @click=${() => this._toggleAddMemberFilter("groups")}>
+                <span class="dot"></span>Groups
+              </button>
+            </div>
             <span class="hint" style="display:block;margin-top:8px">${editing
               ? "Click to add — membership saves immediately. Detail fields still use Save."
               : "Click to add a user or nested group. Paste selects user IDs from Visibility audit."}</span>
           </div>
           <div class="user-picker panel-col-body">
-            <p class="picker-section-title">Home Assistant users</p>
-            ${this._users
-              .filter((u) => !selectedUsers.has(u.id))
-              .filter((u) => {
-                if (!q) return true;
-                return (u.name || "").toLowerCase().includes(q) || (u.id || "").toLowerCase().includes(q);
-              })
-              .map((u) => html`
-                <button type="button" class="user-option"
-                  @click=${() => this._addMember(u.id)}>
-                  <div class="avatar">${this._initials(u.name)}</div>
-                  <div class="member-meta">
-                    <strong>${u.name}</strong>
-                    <span>${u.id}</span>
-                  </div>
-                </button>
-              `)}
-            <p class="picker-section-title">Groups</p>
-            ${availableGroups.length === 0
-              ? html`<div style="padding:8px 12px;color:var(--hg-text-secondary);font-size:0.85rem">No other groups to nest.</div>`
-              : availableGroups.map((g) => html`
-                <button type="button" class="user-option"
-                  @click=${() => this._addGroupMember(g.id)}>
-                  <div class="avatar group">${this._renderHaIcon(g.icon || "mdi:account-group")}</div>
-                  <div class="member-meta">
-                    <strong>${g.name}</strong>
-                    <span>Group · ${g.id}</span>
-                  </div>
-                </button>
-              `)}
+            ${showUsers
+              ? html`
+                  <p class="picker-section-title">Home Assistant users</p>
+                  ${availableUsers.length === 0
+                    ? html`<div style="padding:8px 12px;color:var(--hg-text-secondary);font-size:0.85rem">No matching users.</div>`
+                    : availableUsers.map((u) => html`
+                        <button type="button" class="user-option"
+                          @click=${() => this._addMember(u.id)}>
+                          <div class="avatar">${this._initials(u.name)}</div>
+                          <div class="member-meta">
+                            <strong>${u.name}</strong>
+                            <span>${u.id}</span>
+                          </div>
+                        </button>
+                      `)}
+                `
+              : nothing}
+            ${showGroups
+              ? html`
+                  <p class="picker-section-title">Groups</p>
+                  ${availableGroups.length === 0
+                    ? html`<div style="padding:8px 12px;color:var(--hg-text-secondary);font-size:0.85rem">No other groups to nest.</div>`
+                    : availableGroups.map((g) => html`
+                        <button type="button" class="user-option"
+                          @click=${() => this._addGroupMember(g.id)}>
+                          <div class="avatar group">${this._renderHaIcon(g.icon || "mdi:account-group")}</div>
+                          <div class="member-meta">
+                            <strong>${g.name}</strong>
+                            <span>Group · ${g.id}</span>
+                          </div>
+                        </button>
+                      `)}
+                `
+              : nothing}
           </div>
         </div>
       </div>

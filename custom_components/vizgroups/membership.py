@@ -200,3 +200,14 @@ def is_member(user_id: str, group_members: Iterable[str]) -> bool:
         return False
     needle = str(user_id).strip()
     return any(str(uid).strip() == needle for uid in group_members if uid)
+
+
+def overlapping_direct_user_ids(
+    parent_members: Iterable[Any],
+    nested_group_id: str,
+    members_tree: Mapping[str, Sequence[Any]],
+) -> list[str]:
+    """Direct parent user ids that also appear in a nested group's flatten."""
+    direct = set(member_user_ids(parent_members))
+    nested = set(flatten_group_users(nested_group_id, members_tree))
+    return normalize_user_ids(direct & nested)

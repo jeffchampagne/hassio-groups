@@ -73,6 +73,7 @@ if "vizgroups" not in sys.modules:
 _ensure_homeassistant_stubs()
 _load("vizgroups.const", PKG / "const.py")
 _load("vizgroups.membership", PKG / "membership.py")
+_load("vizgroups.schemas", PKG / "schemas.py")
 _load("vizgroups.models", PKG / "models.py")
 _load("vizgroups.sync", PKG / "sync.py")
 _load("vizgroups.store", PKG / "store.py")
