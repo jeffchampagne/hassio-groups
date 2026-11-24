@@ -150,6 +150,7 @@ class HaGroupsPanel extends LitElement {
     _auditBusy: { state: true },
     _auditReport: { state: true },
     _auditExpanded: { state: true },
+    _clipStatus: { state: true },
   };
 
   static styles = css`
@@ -390,11 +391,23 @@ class HaGroupsPanel extends LitElement {
       padding-top: 0; background: color-mix(in srgb, var(--hg-primary) 4%, transparent);
     }
     .audit-users-block { padding: 4px 0 8px 1.25rem; }
+    .audit-users-head {
+      display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+      margin: 0 0 8px;
+    }
     .audit-users-subhead {
       font-size: 0.78rem; font-weight: 600; letter-spacing: 0.02em;
       text-transform: uppercase; color: var(--hg-text-secondary);
-      margin: 0 0 8px;
+      margin: 0;
     }
+    .clip-status {
+      font-size: 0.78rem; color: var(--hg-primary); font-weight: 500;
+    }
+    .editor-col-head {
+      display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+      padding: 18px 18px 8px;
+    }
+    .editor-col-head .section-title { margin: 0; flex: 1; }
     .audit-users { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
     .audit-users li { display: flex; align-items: center; gap: 10px; }
     .audit-users .member-meta strong { font-weight: 600; }
@@ -713,6 +726,8 @@ class HaGroupsPanel extends LitElement {
     this._auditBusy = false;
     this._auditReport = null;
     this._auditExpanded = {};
+    this._clipStatus = "";
+    this._clipStatusTimer = null;
   }
 
   connectedCallback() {
@@ -901,6 +916,107 @@ class HaGroupsPanel extends LitElement {
       ...this._draft,
       member_user_ids: (this._draft.member_user_ids || []).filter((id) => id !== userId),
     };
+  }
+
+
+  _setClipStatus(msg) {
+    this._clipStatus = msg || "";
+    if (this._clipStatusTimer) clearTimeout(this._clipStatusTimer);
+    if (!msg) return;
+    this._clipStatusTimer = setTimeout(() => {
+      this._clipStatus = "";
+      this.requestUpdate();
+    }, 2200);
+  }
+
+  _parseUserIdsFromText(text) {
+    let raw = String(text || "").trim();
+    if (!raw) return [];
+    if ((raw.startsWith("[") && raw.endsWith("]")) || (raw.startsWith("{") && raw.endsWith("}"))) {
+      try {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) {
+          raw = parsed.map((x) => (typeof x === "string" ? x : x?.id || "")).join("\n");
+        } else if (parsed && typeof parsed === "object") {
+          const arr = parsed.ids || parsed.users || parsed.member_user_ids || [];
+          if (Array.isArray(arr)) {
+            raw = arr.map((x) => (typeof x === "string" ? x : x?.id || "")).join("\n");
+          }
+        }
+      } catch (_e) {
+        /* fall through to delimiter parse */
+      }
+    }
+    const out = [];
+    const seen = new Set();
+    for (const part of raw.split(/[\s,;]+/)) {
+      const id = part.trim().replace(/^["']|["']$/g, "");
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      out.push(id);
+    }
+    return out;
+  }
+
+  async _copyAuditUserIds(userIds) {
+    const ids = (userIds || []).filter(Boolean);
+    if (!ids.length) {
+      this._setClipStatus("Nothing to copy");
+      return;
+    }
+    const text = ids.join("\n");
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        const ta = document.createElement("textarea");
+        ta.value = text;
+        ta.setAttribute("readonly", "");
+        ta.style.position = "fixed";
+        ta.style.left = "-9999px";
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        document.body.removeChild(ta);
+      }
+      this._setClipStatus(`Copied ${ids.length} ID${ids.length === 1 ? "" : "s"}`);
+    } catch (err) {
+      this._error = err?.message || "Could not copy user IDs";
+    }
+  }
+
+  async _pasteGroupMembers() {
+    if (!this._draft) return;
+    let text = "";
+    try {
+      if (!navigator.clipboard?.readText) {
+        throw new Error("Clipboard paste is not available in this browser");
+      }
+      text = await navigator.clipboard.readText();
+    } catch (err) {
+      this._error = err?.message || "Could not read clipboard";
+      return;
+    }
+    const ids = this._parseUserIdsFromText(text);
+    if (!ids.length) {
+      this._setClipStatus("No user IDs in clipboard");
+      return;
+    }
+    const set = new Set(this._draft.member_user_ids || []);
+    let added = 0;
+    for (const id of ids) {
+      if (!set.has(id)) {
+        set.add(id);
+        added += 1;
+      }
+    }
+    this._draft = { ...this._draft, member_user_ids: [...set] };
+    this._error = "";
+    this._setClipStatus(
+      added
+        ? `Selected ${added} user${added === 1 ? "" : "s"}`
+        : "Already selected",
+    );
   }
 
   _pickIcon(icon) {
@@ -1461,7 +1577,15 @@ class HaGroupsPanel extends LitElement {
         </div>
 
         <div class="panel">
-          <div style="padding:18px 18px 8px"><h2 class="section-title">Home Assistant Users</h2></div>
+          <div class="editor-col-head">
+            <h2 class="section-title">Home Assistant Users</h2>
+            <button type="button" class="btn btn-ghost btn-sm has-tip"
+              data-tip="Paste user IDs from clipboard as group members"
+              @click=${this._pasteGroupMembers}>Paste</button>
+            ${this._clipStatus && this._view === "editor"
+              ? html`<span class="clip-status">${this._clipStatus}</span>`
+              : nothing}
+          </div>
           <div class="user-search">
             <input
               type="search"
@@ -1469,7 +1593,7 @@ class HaGroupsPanel extends LitElement {
               .value=${this._userSearch}
               @input=${(e) => (this._userSearch = e.target.value)}
             />
-            <span class="hint" style="display:block;margin-top:8px">Click to add a user to the group.</span>
+            <span class="hint" style="display:block;margin-top:8px">Click to add a user to the group. Paste selects IDs copied from Visibility audit.</span>
           </div>
           <div class="user-picker panel-col-body">
             ${this._users
@@ -1915,7 +2039,17 @@ class HaGroupsPanel extends LitElement {
                         ? html`<tr class="audit-detail">
                             <td colspan="4">
                               <div class="audit-users-block">
-                                <div class="audit-users-subhead">Home Assistant Users</div>
+                                <div class="audit-users-head">
+                                  <div class="audit-users-subhead">Home Assistant Users</div>
+                                  ${userIds.length
+                                    ? html`<button type="button" class="btn btn-ghost btn-sm has-tip"
+                                        data-tip="Copy granted user IDs to clipboard"
+                                        @click=${() => this._copyAuditUserIds(userIds)}>Copy</button>`
+                                    : nothing}
+                                  ${this._clipStatus
+                                    ? html`<span class="clip-status">${this._clipStatus}</span>`
+                                    : nothing}
+                                </div>
                                 ${userIds.length
                                   ? html`<ul class="audit-users">
                                       ${userIds.map((id) => {
