@@ -754,6 +754,13 @@ def locators_match(left: Any, right: Any) -> bool:
     return True
 
 
+def breadcrumb_for_locator(config: dict[str, Any], locator: Any) -> str:
+    """Resolve view › section › … breadcrumb for a locator against a dashboard config."""
+    for node in list_visibility_nodes(config):
+        if locators_match(locator, node.get("locator")):
+            return str(node.get("breadcrumb") or "")
+    return ""
+
 
 def breadcrumb_for_locator(config: dict[str, Any], locator: Any) -> str:
     """Resolve view › section › … breadcrumb for a locator against a dashboard config."""
