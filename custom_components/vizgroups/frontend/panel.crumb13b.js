@@ -2047,7 +2047,7 @@ class VizGroupsPanel extends LitElement {
               @input=${(e) => (this._userSearch = e.target.value)}
             />
             <span class="hint" style="display:block;margin-top:8px">${editing
-              ? "Click to add — membership saves immediately. Detail fields still use Save."
+              ? "Click to add — membership saves immediately."
               : "Click to add a user to the group. Paste selects IDs copied from Visibility audit. Save the group to keep members."}</span>
           </div>
           <div class="user-picker panel-col-body">
