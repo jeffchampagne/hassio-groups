@@ -285,6 +285,7 @@ async def ws_delete_group(
         vol.Optional("merge_mode"): vol.In(list(MERGE_MODES)),
         vol.Optional("fingerprint"): str,
         vol.Optional("label"): str,
+        vol.Optional("breadcrumb"): str,
     }
 )
 @websocket_api.require_admin
@@ -316,6 +317,8 @@ async def ws_save_binding(
             existing.fingerprint = msg.get("fingerprint") or ""
         if "label" in msg:
             existing.label = msg.get("label") or ""
+        if "breadcrumb" in msg:
+            existing.breadcrumb = msg.get("breadcrumb") or ""
         existing.updated = utcnow_iso()
         existing.stale = False
         await runtime.store.upsert_binding(existing)
@@ -327,6 +330,7 @@ async def ws_save_binding(
             merge_mode=msg.get("merge_mode") or MERGE_ENSURE_USER_BRANCH,
             fingerprint=msg.get("fingerprint") or "",
             label=msg.get("label") or "",
+            breadcrumb=msg.get("breadcrumb") or "",
             binding_id=binding_id,
         )
         await runtime.store.upsert_binding(binding)

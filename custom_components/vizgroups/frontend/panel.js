@@ -1400,6 +1400,7 @@ class VizGroupsPanel extends LitElement {
       locator: loc,
       fingerprint: node.fingerprint || "",
       label: this._bindingDraft.label || node.label || "",
+      breadcrumb: node.breadcrumb || "",
     };
     const title = node.label || node.snippet || loc.kind || "Target";
     const crumb = node.breadcrumb || "";
@@ -1445,6 +1446,7 @@ class VizGroupsPanel extends LitElement {
       include: [],
       exclude: [],
       label: "",
+      breadcrumb: "",
       locator: { kind: "card", view_index: 0, section_index: 0, card_index: 0 },
       merge_mode: "ensure_user_branch",
       fingerprint: "",
@@ -1460,6 +1462,7 @@ class VizGroupsPanel extends LitElement {
       include: [...(binding.expression?.include || [])],
       exclude: [...(binding.expression?.exclude || [])],
       label: binding.label || "",
+      breadcrumb: binding.breadcrumb || "",
       locator: {
         kind: loc.kind || "card",
         view_path: loc.view_path ?? "",
@@ -1478,8 +1481,12 @@ class VizGroupsPanel extends LitElement {
     );
     this._selectedNodeLabel = editTitle;
     const editBits = [];
-    const summary = this._locatorSummary(this._bindingDraft.locator, this._bindingDraft.fingerprint, "");
-    if (summary && summary !== editTitle) editBits.push(summary);
+    const crumb = binding.breadcrumb || "";
+    if (crumb && crumb !== editTitle) editBits.push(crumb);
+    else {
+      const summary = this._locatorSummary(this._bindingDraft.locator, this._bindingDraft.fingerprint, "");
+      if (summary && summary !== editTitle) editBits.push(summary);
+    }
     if (loc.kind) editBits.push(loc.kind);
     this._selectedNodeSubtitle = editBits.join(" · ");
     this._selectedNodeKey = this._nodeKey({
@@ -1515,6 +1522,7 @@ class VizGroupsPanel extends LitElement {
       merge_mode: d.merge_mode || "ensure_user_branch",
       fingerprint: d.fingerprint || "",
       label: d.label || "",
+      breadcrumb: d.breadcrumb || "",
     });
     this._bindingDraft = null;
     // Re-sync so Lovelace visibility reflects the edit immediately.
@@ -2269,8 +2277,16 @@ class VizGroupsPanel extends LitElement {
             ${this._bindings.length === 0
               ? html`<tr><td colspan="6">No visibility rules yet.</td></tr>`
               : this._bindings.map(
-                  (b) => html`<tr class="row-click" @click=${() => this._openEditBinding(b)}>
-                    <td>${b.label || b.id}</td>
+                  (b) => {
+                    const label = b.label || b.id;
+                    const crumb = b.breadcrumb || "";
+                    return html`<tr class="row-click" @click=${() => this._openEditBinding(b)}>
+                    <td>
+                      <strong>${label}</strong>
+                      ${crumb && crumb !== label
+                        ? html`<div style="font-size:0.8rem;color:var(--hg-text-secondary)">${crumb}</div>`
+                        : nothing}
+                    </td>
                     <td>${b.dashboard_url_path}</td>
                     <td><div class="chip-row">${(b.expression?.include || []).map((id) => html`<span class="pill">${id}</span>`)}</div></td>
                     <td><div class="chip-row">${(b.expression?.exclude || []).map((id) => html`<span class="pill warn">${id}</span>`)}</div></td>
@@ -2281,8 +2297,8 @@ class VizGroupsPanel extends LitElement {
                         <button class="btn btn-danger btn-sm" @click=${() => this._deleteBinding(b.id)}>Remove</button>
                       </div>
                     </td>
-                  </tr>`
-                )}
+                  </tr>`;
+                  })}
           </tbody>
         </table>
       </div>

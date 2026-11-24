@@ -24,7 +24,7 @@ from .const import (
 from .membership import effective_users
 from .models import Binding, SyncMetadata, _utcnow_iso
 from .store import GroupsStore
-from .sync import apply_binding_to_config
+from .sync import apply_binding_to_config, list_visibility_nodes, locators_match
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -489,7 +489,16 @@ class LovelaceSyncEngine:
                 continue
 
             dirty = False
+            # Resolve breadcrumbs once per dashboard so Manage visibility can
+            # show view › section › … under the element label.
+            nodes = list_visibility_nodes(config)
             for binding in bindings:
+                for node in nodes:
+                    if locators_match(binding.locator, node.get("locator")):
+                        crumb = str(node.get("breadcrumb") or "")
+                        if crumb and binding.breadcrumb != crumb:
+                            binding.breadcrumb = crumb
+                        break
                 users = self.compute_users_for_binding(
                     binding, members_by_group=members_by_group
                 )

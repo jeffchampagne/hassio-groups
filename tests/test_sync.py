@@ -7,6 +7,7 @@ from vizgroups.models import Locator
 from vizgroups.sync import (
     apply_binding_to_config,
     apply_visibility_users,
+    breadcrumb_for_locator,
     fingerprint_node,
     list_visibility_nodes,
     make_user_condition,
@@ -199,6 +200,19 @@ def test_list_visibility_nodes_covers_kinds() -> None:
     kinds = {n["kind"] for n in nodes}
     assert {"view", "section", "card"} <= kinds
     assert any(n["label"] == "Apartment Door" for n in nodes)
+
+
+def test_breadcrumb_for_locator_card_and_section() -> None:
+    card_loc = Locator(
+        kind="card", view_path="home", view_index=0, section_index=0, card_index=0
+    )
+    assert breadcrumb_for_locator(SAMPLE, card_loc) == "Home › Main › Lights"
+    section_loc = Locator(kind="section", view_index=0, section_index=1)
+    assert breadcrumb_for_locator(SAMPLE, section_loc) == "Home › Mixed"
+    view_loc = Locator(kind="view", view_path="admin")
+    assert breadcrumb_for_locator(SAMPLE, view_loc) == "Admin"
+    missing = Locator(kind="card", view_index=0, section_index=0, card_index=99)
+    assert breadcrumb_for_locator(SAMPLE, missing) == ""
 
 
 def test_replace_mode_keeps_non_user_top_level() -> None:
