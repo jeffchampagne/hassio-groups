@@ -13,6 +13,7 @@ from vizgroups.sync import (
     build_dashboard_preview_tree,
     fingerprint_node,
     list_visibility_nodes,
+    locators_match,
     make_user_condition,
     resolve_locator,
 )
@@ -235,6 +236,60 @@ def test_mushroom_template_primary_label() -> None:
     assert mushroom["label"] == "John's Apartment"
     tree = build_dashboard_preview_tree(cfg)
     assert tree[0]["sections"][0]["cards"][0]["label"] == "John's Apartment"
+
+
+def test_section_binding_matches_audit_without_card_index() -> None:
+    """Section bindings must match even if picker leaked card_index: 0."""
+    binding_loc = {
+        "kind": "section",
+        "view_index": 0,
+        "section_index": 1,
+        "card_index": 0,
+    }
+    audit_loc = {"kind": "section", "view_index": 0, "section_index": 1}
+    assert locators_match(binding_loc, audit_loc)
+    assert not locators_match(
+        binding_loc,
+        {"kind": "card", "view_index": 0, "section_index": 1, "card_index": 0},
+    )
+
+    cfg = {
+        "views": [
+            {
+                "title": "Building",
+                "sections": [
+                    {"cards": []},
+                    {
+                        "type": "grid",
+                        "visibility": [
+                            {"condition": "user", "users": ["u1", "u2"]}
+                        ],
+                        "cards": [
+                            {"type": "heading", "heading": "Open Doors/Windows"}
+                        ],
+                    },
+                ],
+            }
+        ]
+    }
+    audit = audit_dashboard_user_visibility(
+        cfg,
+        dashboard_url_path="lovelace",
+        bindings=[
+            {
+                "id": "bind-open-doors",
+                "label": "Open Doors/Windows",
+                "dashboard_url_path": "lovelace",
+                "locator": binding_loc,
+                "stale": False,
+                "expression": {"include": ["24-7-building-access"], "exclude": []},
+            }
+        ],
+    )
+    row = audit["elements"][0]
+    assert row["label"] == "Open Doors/Windows"
+    assert row["status"] == "managed"
+    assert row["binding_id"] == "bind-open-doors"
 
 
 def test_section_label_from_child_heading_card() -> None:

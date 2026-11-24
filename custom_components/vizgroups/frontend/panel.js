@@ -4,6 +4,7 @@
  * Visibility is UX, not ACL.
  *
  * UX: edit bindings + visual dashboard preview picker; editable group IDs; MDI icon picker.
+ * Live hotfix 2026-11-24: member autosave + picker under selected target + table friendly names.
  */
 import {
   LitElement,
@@ -782,6 +783,8 @@ class VizGroupsPanel extends LitElement {
     this._clipStatusTimer = null;
     this._pasteOpen = false;
     this._pasteDraft = "";
+    this._memberSaveSeq = 0;
+    this._memberSavePromise = null;
   }
 
   connectedCallback() {
@@ -857,6 +860,22 @@ class VizGroupsPanel extends LitElement {
 
   get _selectedGroup() {
     return this._groups.find((g) => g.id === this._selectedGroupId) || null;
+  }
+
+
+  /** Dashboard title from WS list_dashboards payload; fall back to url_path. */
+  _dashboardTitle(urlPath) {
+    const path = urlPath || "lovelace";
+    const dash = this._dashboards.find((d) => d.url_path === path);
+    if (dash?.title) return dash.title;
+    if (path === "lovelace") return "Overview";
+    return path;
+  }
+
+  /** Group friendly name; fall back to id when the group is missing. */
+  _groupName(groupId) {
+    const g = this._groups.find((x) => x.id === groupId);
+    return g?.name || groupId;
   }
 
   _initials(name) {
@@ -956,24 +975,88 @@ class VizGroupsPanel extends LitElement {
   _toggleMember(userId) {
     if (!this._draft) return;
     const set = new Set(this._draft.member_user_ids || []);
-    if (set.has(userId)) set.delete(userId);
+    const removing = set.has(userId);
+    if (removing) set.delete(userId);
     else set.add(userId);
     this._draft = { ...this._draft, member_user_ids: [...set] };
+    void this._persistMembers({
+      successMsg: removing ? "Member removed" : "Member added",
+    });
   }
 
   _addMember(userId) {
     if (!this._draft || !userId) return;
     const set = new Set(this._draft.member_user_ids || []);
+    if (set.has(userId)) return;
     set.add(userId);
     this._draft = { ...this._draft, member_user_ids: [...set] };
+    void this._persistMembers({ successMsg: "Member added" });
   }
 
   _removeMember(userId) {
     if (!this._draft) return;
+    const before = this._draft.member_user_ids || [];
+    if (!before.includes(userId)) return;
     this._draft = {
       ...this._draft,
-      member_user_ids: (this._draft.member_user_ids || []).filter((id) => id !== userId),
+      member_user_ids: before.filter((id) => id !== userId),
     };
+    void this._persistMembers({ successMsg: "Member removed" });
+  }
+
+  /**
+   * Persist membership for an existing group immediately (no full-panel busy).
+   * Uses saved group details so unsaved name/description/icon edits stay draft-only.
+   * New (unsaved) groups stay local until Save.
+   */
+  async _persistMembers({ successMsg = "Members saved" } = {}) {
+    const groupId = this._selectedGroupId;
+    if (!groupId || !this._draft) return false;
+    // Full Save owns the write — skip to avoid racing / double-saving.
+    if (this._busy) return false;
+
+    const existing = this._groups.find((g) => g.id === groupId);
+    if (!existing) return false;
+
+    const seq = ++this._memberSaveSeq;
+    const member_user_ids = [...(this._draft.member_user_ids || [])];
+    const run = (async () => {
+      try {
+        const result = await this.hass.connection.sendMessagePromise({
+          type: `${DOMAIN}/save_group`,
+          name: existing.name,
+          group_id: groupId,
+          previous_group_id: groupId,
+          description: existing.description || "",
+          icon: existing.icon || "mdi:account-group",
+          member_user_ids,
+        });
+        if (seq !== this._memberSaveSeq) return false;
+        if (result && (result.groups || result.users)) this._data = result;
+        this._error = "";
+        this._setClipStatus(successMsg);
+        return true;
+      } catch (err) {
+        if (seq !== this._memberSaveSeq) return false;
+        this._error = err?.message || String(err);
+        this._setClipStatus("Could not save members");
+        // Revert membership to last known saved snapshot; keep detail draft edits.
+        const saved = (this._data?.groups || []).find((g) => g.id === groupId);
+        if (saved && this._draft && this._selectedGroupId === groupId) {
+          this._draft = {
+            ...this._draft,
+            member_user_ids: [...(saved.member_user_ids || [])],
+          };
+        }
+        return false;
+      }
+    })();
+    this._memberSavePromise = run;
+    try {
+      return await run;
+    } finally {
+      if (this._memberSavePromise === run) this._memberSavePromise = null;
+    }
   }
 
 
@@ -1081,6 +1164,11 @@ class VizGroupsPanel extends LitElement {
       }
     }
     this._draft = { ...this._draft, member_user_ids: [...set] };
+    if (added) {
+      void this._persistMembers({
+        successMsg: `Added ${added} member${added === 1 ? "" : "s"}`,
+      });
+    }
     return added;
   }
 
@@ -1193,6 +1281,15 @@ class VizGroupsPanel extends LitElement {
     if (!groupId) {
       this._error = "Group ID is required";
       return;
+    }
+    // Let any in-flight membership autosave finish (or be superseded by this write).
+    this._memberSaveSeq += 1;
+    if (this._memberSavePromise) {
+      try {
+        await this._memberSavePromise;
+      } catch (_err) {
+        /* membership error already surfaced; full save continues */
+      }
     }
     await this._call("save_group", {
       name: this._draft.name.trim(),
@@ -1388,13 +1485,7 @@ class VizGroupsPanel extends LitElement {
 
   _selectNode(node) {
     if (!node?.locator) return;
-    const loc = { ...node.locator };
-    // Avoid undefined keys polluting locator
-    Object.keys(loc).forEach((k) => {
-      if (loc[k] === undefined || loc[k] === null || loc[k] === "") {
-        if (k !== "view_path") delete loc[k];
-      }
-    });
+    const loc = this._normalizeLocator(node.locator);
     this._bindingDraft = {
       ...this._bindingDraft,
       locator: loc,
@@ -1452,6 +1543,27 @@ class VizGroupsPanel extends LitElement {
     this._view = "bindings";
   }
 
+
+  /** Drop indices that do not apply to the locator kind (section must not keep card_index). */
+  _normalizeLocator(loc = {}) {
+    const kind = loc.kind || "card";
+    const out = { kind };
+    if (loc.view_path) out.view_path = loc.view_path;
+    if (loc.view_index != null && loc.view_index !== "") out.view_index = Number(loc.view_index);
+    else if (!out.view_path) out.view_index = 0;
+    if (kind === "view") return out;
+    if (loc.section_index != null && loc.section_index !== "") {
+      out.section_index = Number(loc.section_index);
+    }
+    if (kind === "section") return out;
+    if (loc.card_index != null && loc.card_index !== "") {
+      out.card_index = Number(loc.card_index);
+    } else {
+      out.card_index = 0;
+    }
+    return out;
+  }
+
   _openEditBinding(binding) {
     const loc = binding.locator || {};
     this._bindingDraft = {
@@ -1460,13 +1572,7 @@ class VizGroupsPanel extends LitElement {
       include: [...(binding.expression?.include || [])],
       exclude: [...(binding.expression?.exclude || [])],
       label: binding.label || "",
-      locator: {
-        kind: loc.kind || "card",
-        view_path: loc.view_path ?? "",
-        view_index: loc.view_index ?? 0,
-        section_index: loc.section_index ?? 0,
-        card_index: loc.card_index ?? 0,
-      },
+      locator: this._normalizeLocator(loc),
       merge_mode: binding.merge_mode || "ensure_user_branch",
       fingerprint: binding.fingerprint || "",
     };
@@ -1499,13 +1605,7 @@ class VizGroupsPanel extends LitElement {
       this._error = "At least one include group is required";
       return;
     }
-    const locator = {
-      kind: d.locator?.kind || "card",
-      view_index: Number(d.locator?.view_index ?? 0),
-      section_index: Number(d.locator?.section_index ?? 0),
-      card_index: Number(d.locator?.card_index ?? 0),
-    };
-    if (d.locator?.view_path) locator.view_path = d.locator.view_path;
+    const locator = this._normalizeLocator(d.locator || {});
     await this._call("save_binding", {
       binding_id: d.binding_id || undefined,
       dashboard_url_path: d.dashboard_url_path,
@@ -1764,7 +1864,9 @@ class VizGroupsPanel extends LitElement {
               .value=${this._userSearch}
               @input=${(e) => (this._userSearch = e.target.value)}
             />
-            <span class="hint" style="display:block;margin-top:8px">Click to add a user to the group. Paste selects IDs copied from Visibility audit.</span>
+            <span class="hint" style="display:block;margin-top:8px">${editing
+              ? "Click to add — membership saves immediately. Detail fields still use Save."
+              : "Click to add a user to the group. Paste selects IDs copied from Visibility audit. Save the group to keep members."}</span>
           </div>
           <div class="user-picker panel-col-body">
             ${this._users
@@ -2042,49 +2144,41 @@ class VizGroupsPanel extends LitElement {
             ? html`<div class="selected-node">
                 <div class="k">Selected target</div>
                 <strong>${this._selectedNodeLabel}</strong>
-                <div style="margin-top:6px;font-size:0.8rem;color:var(--muted)">${d.dashboard_url_path || ""}</div>
+                <div style="margin-top:6px;font-size:0.8rem;color:var(--muted)">${this._dashboardTitle(d.dashboard_url_path)}</div>
                 ${(d.include || []).length
                   ? html`<div class="chip-row" style="margin-top:10px">
-                      ${(d.include || []).map((id) => {
-                        const g = this._groups.find((x) => x.id === id);
-                        return html`<span class="pill">${g?.name || id}</span>`;
-                      })}
+                      ${(d.include || []).map((id) => html`<span class="pill">${this._groupName(id)}</span>`)}
                     </div>`
                   : nothing}
                 ${(d.exclude || []).length
                   ? html`<div class="chip-row" style="margin-top:6px">
-                      ${(d.exclude || []).map((id) => {
-                        const g = this._groups.find((x) => x.id === id);
-                        return html`<span class="pill warn">not ${g?.name || id}</span>`;
-                      })}
+                      ${(d.exclude || []).map((id) => html`<span class="pill warn">not ${this._groupName(id)}</span>`)}
                     </div>`
                   : nothing}
               </div>`
             : html`<div class="hint">Open the visual picker and choose the dashboard, and then dashboard element you want to manage visibility for.</div>`}
+          <div class="toolbar" style="margin-top:14px">
+            <button class="btn btn-primary btn-sm" type="button" ?disabled=${this._busy}
+              @click=${() => this._openDashboardPicker()}>
+              ${this._pickerStep === "closed" ? "Open visual picker" : "Show dashboards"}
+            </button>
+            ${this._pickerStep !== "closed"
+              ? html`<button class="btn btn-ghost btn-sm" type="button"
+                  @click=${() => (this._pickerStep = "closed")}>Hide picker</button>`
+              : nothing}
+            ${this._selectedNodeLabel && this._pickerStep !== "groups"
+              ? html`<button class="btn btn-ghost btn-sm" type="button"
+                  @click=${() => (this._pickerStep = "groups")}>Choose groups →</button>`
+              : nothing}
+          </div>
           ${!inGroupsStep
-            ? html`<div class="toolbar" style="margin-top:14px">
+            ? html`<div class="toolbar" style="margin-top:10px">
                 <button class="btn btn-ghost" @click=${() => { this._bindingDraft = null; this._resetNodeBrowser(); }}>Cancel</button>
               </div>`
             : nothing}
         </div>
         <div>
-          <div class="field"><label>Visual picker</label>
-            <div class="toolbar" style="margin:0 0 8px">
-              <button class="btn btn-primary btn-sm" type="button" ?disabled=${this._busy}
-                @click=${() => this._openDashboardPicker()}>
-                ${this._pickerStep === "closed" ? "Open visual picker" : "Show dashboards"}
-              </button>
-              ${this._pickerStep !== "closed"
-                ? html`<button class="btn btn-ghost btn-sm" type="button"
-                    @click=${() => (this._pickerStep = "closed")}>Hide picker</button>`
-                : nothing}
-              ${this._selectedNodeLabel && this._pickerStep !== "groups"
-                ? html`<button class="btn btn-ghost btn-sm" type="button"
-                    @click=${() => (this._pickerStep = "groups")}>Choose groups →</button>`
-                : nothing}
-            </div>
-            ${this._renderLocatorPicker()}
-          </div>
+          ${this._renderLocatorPicker()}
         </div>
       </div>
     </div>`;
@@ -2271,9 +2365,9 @@ class VizGroupsPanel extends LitElement {
               : this._bindings.map(
                   (b) => html`<tr class="row-click" @click=${() => this._openEditBinding(b)}>
                     <td>${b.label || b.id}</td>
-                    <td>${b.dashboard_url_path}</td>
-                    <td><div class="chip-row">${(b.expression?.include || []).map((id) => html`<span class="pill">${id}</span>`)}</div></td>
-                    <td><div class="chip-row">${(b.expression?.exclude || []).map((id) => html`<span class="pill warn">${id}</span>`)}</div></td>
+                    <td>${this._dashboardTitle(b.dashboard_url_path)}</td>
+                    <td><div class="chip-row">${(b.expression?.include || []).map((id) => html`<span class="pill">${this._groupName(id)}</span>`)}</div></td>
+                    <td><div class="chip-row">${(b.expression?.exclude || []).map((id) => html`<span class="pill warn">${this._groupName(id)}</span>`)}</div></td>
                     <td>${b.stale ? html`<span class="pill warn">stale</span>` : html`<span class="pill ok">OK</span>`}</td>
                     <td>
                       <div class="row-actions" @click=${(e) => e.stopPropagation()}>
