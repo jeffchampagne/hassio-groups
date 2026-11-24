@@ -2,8 +2,8 @@
 
 **HA Groups** is a Home Assistant custom integration for first-class **user groups**: manage membership in an admin panel, bind any visibility-capable Lovelace element to include/exclude groups, and expose membership for automations.
 
-- **Domain:** `hassio_groups`
-- **Panel:** sidebar **HA Groups** (Lit, admin-only)
+- **Domain:** `groups`
+- **Panel:** sidebar **Viz Groups** (`/groups`) (Lit, admin-only)
 - **Storage:** Home Assistant `.storage` (covered by built-in HA Backup — no custom backup path)
 - **Visibility model:** rewrite managed `condition: user` leaves only; empty membership **fail-closes** with `users: []`
 - **Multi-group:** **AND** include ∩ **NOT** exclude
@@ -18,7 +18,7 @@
 
 ### Manual install
 
-Copy `custom_components/hassio_groups` into your HA `custom_components/` folder, restart, then add the integration.
+Copy `custom_components/groups` into your HA `custom_components/` folder, restart, then add the integration.
 
 ## Setup
 
@@ -52,7 +52,7 @@ Mixed trees (e.g. `or` of `state` + `user`) keep non-user siblings; only the man
 
 ### Automation example
 
-Each group exposes `sensor.hassio_groups_<group_id>`:
+Each group exposes `sensor.groups_<group_id>`:
 
 - **state:** member count
 - **attributes.members:** list of HA user IDs
@@ -63,23 +63,23 @@ conditions:
   - condition: template
     value_template: >-
       {{ trigger.to_state.context.user_id
-         in state_attr('sensor.hassio_groups_teachers', 'members') }}
+         in state_attr('sensor.groups_teachers', 'members') }}
 ```
 
 Non-membership:
 
 ```yaml
 {{ trigger.to_state.context.user_id
-   not in state_attr('sensor.hassio_groups_teachers', 'members') }}
+   not in state_attr('sensor.groups_teachers', 'members') }}
 ```
 
 ## Services
 
-- `hassio_groups.create_group` / `update_group` / `delete_group`
-- `hassio_groups.set_members` / `add_members` / `remove_members`
-- `hassio_groups.bind_element` / `unbind_element`
-- `hassio_groups.sync` (optional `dashboard`, `dry_run`)
-- `hassio_groups.is_member` (response service)
+- `groups.create_group` / `update_group` / `delete_group`
+- `groups.set_members` / `add_members` / `remove_members`
+- `groups.bind_element` / `unbind_element`
+- `groups.sync` (optional `dashboard`, `dry_run`)
+- `groups.is_member` (response service)
 
 ## Development
 

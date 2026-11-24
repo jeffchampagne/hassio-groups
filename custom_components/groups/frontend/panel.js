@@ -12,7 +12,7 @@ import {
   nothing,
 } from "https://unpkg.com/lit@3.2.1/index.js?module";
 
-const DOMAIN = "hassio_groups";
+const DOMAIN = "groups";
 
 /** Curated MDI set for groups / people / home — type-to-filter; free-text still allowed. */
 const MDI_ICON_CHOICES = [
@@ -1532,7 +1532,7 @@ class HaGroupsPanel extends LitElement {
   }
 
   _automationYaml(group) {
-    const entity = `sensor.hassio_groups_${group.id}`;
+    const entity = `sensor.groups_${group.id}`;
     return `conditions:
   - condition: template
     value_template: >-
@@ -2304,7 +2304,7 @@ class HaGroupsPanel extends LitElement {
         <h2 class="section-title">All group sensors</h2>
         <div>
           ${this._groups.map((group) => {
-            const entityId = `sensor.hassio_groups_${group.id}`;
+            const entityId = `sensor.groups_${group.id}`;
             const memberIds = (group.members || []).map((m) => m.id).filter(Boolean);
             const ids = memberIds.length ? memberIds : (group.member_user_ids || []);
             const names = (group.members || []).map((m) => m.name || m.id).filter(Boolean);
@@ -2331,4 +2331,4 @@ class HaGroupsPanel extends LitElement {
   }
 }
 
-customElements.define("ha-groups-panel", HaGroupsPanel);
+customElements.define("groups-panel", HaGroupsPanel);

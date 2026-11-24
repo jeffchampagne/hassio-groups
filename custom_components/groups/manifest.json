@@ -1,5 +1,5 @@
 {
-  "domain": "hassio_groups",
+  "domain": "groups",
   "name": "Viz Groups",
   "codeowners": ["@jeffchampagne"],
   "config_flow": true,
