@@ -149,6 +149,7 @@ class HaGroupsPanel extends LitElement {
     _auditDashboard: { state: true },
     _auditBusy: { state: true },
     _auditReport: { state: true },
+    _auditExpanded: { state: true },
   };
 
   static styles = css`
@@ -371,22 +372,30 @@ class HaGroupsPanel extends LitElement {
       transition: transform 0.15s ease;
     }
     .sensor-more[open] > summary::before { transform: rotate(45deg); }
-    .audit-row-details { margin: 0; }
-    .audit-row-details > summary {
-      list-style: none; cursor: pointer; display: grid;
-      grid-template-columns: 1.4fr 0.7fr 0.7fr 1fr; gap: 12px; align-items: center;
-      padding: 12px 0;
+    .audit-toggle {
+      display: inline-flex; align-items: flex-start; gap: 8px;
+      background: none; border: 0; padding: 0; margin: 0;
+      color: inherit; font: inherit; text-align: left; cursor: pointer; width: 100%;
     }
-    .audit-row-details > summary::-webkit-details-marker { display: none; }
-    .audit-row-details > summary::before {
-      content: ""; width: 0.4em; height: 0.4em; justify-self: start;
+    .audit-chevron {
+      flex: 0 0 auto; width: 0.4em; height: 0.4em; margin-top: 0.45em;
       border-right: 2px solid var(--hg-text-secondary);
       border-bottom: 2px solid var(--hg-text-secondary);
-      transform: rotate(-45deg); margin-right: 6px;
+      transform: rotate(-45deg);
       transition: transform 0.15s ease;
     }
-    .audit-row-details[open] > summary::before { transform: rotate(45deg); }
-    .audit-users { list-style: none; margin: 0 0 12px; padding: 0 0 0 18px; display: grid; gap: 8px; }
+    .audit-chevron.open { transform: rotate(45deg); }
+    .audit-toggle-label { min-width: 0; flex: 1; }
+    tr.audit-detail td {
+      padding-top: 0; background: color-mix(in srgb, var(--hg-primary) 4%, transparent);
+    }
+    .audit-users-block { padding: 4px 0 8px 1.25rem; }
+    .audit-users-subhead {
+      font-size: 0.78rem; font-weight: 600; letter-spacing: 0.02em;
+      text-transform: uppercase; color: var(--hg-text-secondary);
+      margin: 0 0 8px;
+    }
+    .audit-users { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
     .audit-users li { display: flex; align-items: center; gap: 10px; }
     .audit-users .member-meta strong { font-weight: 600; }
     .audit-users .member-meta span { font-size: 0.8rem; color: var(--hg-text-secondary); word-break: break-all; }
@@ -703,6 +712,7 @@ class HaGroupsPanel extends LitElement {
     this._auditDashboard = "";
     this._auditBusy = false;
     this._auditReport = null;
+    this._auditExpanded = {};
   }
 
   connectedCallback() {
@@ -1800,6 +1810,7 @@ class HaGroupsPanel extends LitElement {
         dashboard_url_path: path,
       });
       this._auditReport = result || null;
+      this._auditExpanded = {};
     } catch (err) {
       this._auditReport = null;
       this._error = err?.message || String(err);
@@ -1826,7 +1837,7 @@ class HaGroupsPanel extends LitElement {
           <div class="field" style="margin:0;min-width:220px;flex:1">
             <label>Dashboard</label>
             <select .value=${current}
-              @change=${(e) => { this._auditDashboard = e.target.value; this._auditReport = null; }}>
+              @change=${(e) => { this._auditDashboard = e.target.value; this._auditReport = null; this._auditExpanded = {}; }}>
               ${dashes.map((d) => html`<option value=${d.url_path}>${d.title || d.url_path}</option>`)}
             </select>
           </div>
@@ -1858,51 +1869,71 @@ class HaGroupsPanel extends LitElement {
                 ? html`<tr><td colspan="4">Run an audit to scan this dashboard.</td></tr>`
                 : rows.length === 0
                   ? html`<tr><td colspan="4">No elements with people visibility on this dashboard.</td></tr>`
-                  : rows.map((row) => {
+                  : rows.map((row, idx) => {
                       const userIds = row.lovelace_users || [];
-                      return html`<tr>
-                      <td colspan="4" style="padding:0 16px">
-                        <details class="audit-row-details">
-                          <summary>
-                            <div>
+                      const rowKey = row.fingerprint
+                        || row.binding_id
+                        || `${row.label || "row"}-${idx}`;
+                      const open = !!this._auditExpanded[rowKey];
+                      return html`
+                      <tr>
+                        <td>
+                          <button type="button" class="audit-toggle"
+                            aria-expanded=${open ? "true" : "false"}
+                            @click=${() => {
+                              this._auditExpanded = {
+                                ...this._auditExpanded,
+                                [rowKey]: !open,
+                              };
+                            }}>
+                            <span class="audit-chevron ${open ? "open" : ""}" aria-hidden="true"></span>
+                            <span class="audit-toggle-label">
                               <strong>${row.label || "Untitled"}</strong>
                               ${row.breadcrumb && row.breadcrumb !== row.label
                                 ? html`<div style="font-size:0.8rem;color:var(--hg-text-secondary)">${row.breadcrumb}</div>`
                                 : nothing}
-                            </div>
-                            <div><code>${row.type || row.kind || "—"}</code></div>
-                            <div>${userIds.length
-                              ? html`<span class="pill">${userIds.length}</span>`
-                              : "—"}</div>
-                            <div>
-                              ${row.status === "managed"
-                                ? html`<span class="pill ok has-tip"
-                                    data-tip=${`Managed by HA Groups binding ${row.binding_id || ""}${row.binding_label ? ` (${row.binding_label})` : ""}${row.binding_stale ? " — stale" : ""}`}>
-                                    HA Groups
-                                  </span>`
-                                : html`<span class="pill warn has-tip"
-                                    data-tip="People visibility exists in the dashboard YAML/UI, but no matching HA Groups binding.">
-                                    manual dashboard config
-                                  </span>`}
-                            </div>
-                          </summary>
-                          ${userIds.length
-                            ? html`<ul class="audit-users">
-                                ${userIds.map((id) => {
-                                  const u = this._users.find((x) => x.id === id);
-                                  return html`<li>
-                                    <div class="avatar">${this._initials(u?.name || id)}</div>
-                                    <div class="member-meta">
-                                      <strong>${u?.name || id}</strong>
-                                      <span>${id}</span>
-                                    </div>
-                                  </li>`;
-                                })}
-                              </ul>`
-                            : html`<div class="hint" style="margin:0 0 12px 18px">No Home Assistant users on this visibility rule.</div>`}
-                        </details>
-                      </td>
-                    </tr>`;
+                            </span>
+                          </button>
+                        </td>
+                        <td><code>${row.type || row.kind || "—"}</code></td>
+                        <td>${userIds.length
+                          ? html`<span class="pill">${userIds.length}</span>`
+                          : "—"}</td>
+                        <td>
+                          ${row.status === "managed"
+                            ? html`<span class="pill ok has-tip"
+                                data-tip=${`Managed by HA Groups binding ${row.binding_id || ""}${row.binding_label ? ` (${row.binding_label})` : ""}${row.binding_stale ? " — stale" : ""}`}>
+                                HA Groups
+                              </span>`
+                            : html`<span class="pill warn has-tip"
+                                data-tip="People visibility exists in the dashboard YAML/UI, but no matching HA Groups binding.">
+                                manual dashboard config
+                              </span>`}
+                        </td>
+                      </tr>
+                      ${open
+                        ? html`<tr class="audit-detail">
+                            <td colspan="4">
+                              <div class="audit-users-block">
+                                <div class="audit-users-subhead">Home Assistant Users</div>
+                                ${userIds.length
+                                  ? html`<ul class="audit-users">
+                                      ${userIds.map((id) => {
+                                        const u = this._users.find((x) => x.id === id);
+                                        return html`<li>
+                                          <div class="avatar">${this._initials(u?.name || id)}</div>
+                                          <div class="member-meta">
+                                            <strong>${u?.name || id}</strong>
+                                            <span>${id}</span>
+                                          </div>
+                                        </li>`;
+                                      })}
+                                    </ul>`
+                                  : html`<div class="hint" style="margin:0">No Home Assistant users on this visibility rule.</div>`}
+                              </div>
+                            </td>
+                          </tr>`
+                        : nothing}`;
                     })}
             </tbody>
           </table>
