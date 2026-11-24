@@ -15,9 +15,17 @@ def fingerprint_node(node: dict[str, Any] | None) -> str:
     """Stable-ish fingerprint from type + title/entity for drift detection."""
     if not isinstance(node, dict):
         return ""
+    # Include mushroom primary (and other title-ish fields) so fingerprints
+    # are not just "custom:mushroom-template-card|" with an empty title segment.
+    titleish = ""
+    for key in ("primary", "label", "name", "title", "heading"):
+        val = node.get(key)
+        if isinstance(val, str) and val.strip():
+            titleish = val.strip()
+            break
     parts = [
         str(node.get("type") or ""),
-        str(node.get("title") or node.get("name") or ""),
+        titleish,
     ]
     entity = node.get("entity")
     if isinstance(entity, str):
@@ -197,12 +205,93 @@ def apply_binding_to_config(
     return working, "ok"
 
 
+def _human_label_value(val: Any) -> str | None:
+    """Return a stripped human-readable string, or None if missing/blank."""
+    if isinstance(val, str) and val.strip():
+        return val.strip()
+    return None
+
+
+_TITLE_KEYS = ("primary", "secondary", "label", "name", "title", "heading")
+
+
+def _direct_title_label(node: dict[str, Any]) -> str | None:
+    """Title-ish fields on the node itself (no entity / nested fallbacks)."""
+    for key in _TITLE_KEYS:
+        text = _human_label_value(node.get(key))
+        if text is not None:
+            return text
+    return None
+
+
+def _nested_heading_label(node: dict[str, Any]) -> str | None:
+    """Infer a label from nested ``heading`` cards (sections / stacks).
+
+    Sections on Overview often omit ``title`` and instead lead with a
+    ``type: heading`` card (e.g. ``Common Area Lighting``). Only heading
+    cards count here — nested button ``name`` values (Open/Closed) must not
+    steal the label from a sibling section heading.
+    """
+    cards = node.get("cards")
+    if isinstance(cards, list):
+        for child in cards:
+            if not isinstance(child, dict):
+                continue
+            child_type = str(child.get("type") or "")
+            if child_type == "heading" or child_type.endswith(":heading"):
+                direct = _direct_title_label(child)
+                if direct:
+                    return direct
+            # One level deeper for nested stacks that wrap a heading.
+            if child_type in (
+                "grid",
+                "horizontal-stack",
+                "vertical-stack",
+                "stack",
+            ):
+                deeper = _nested_heading_label(child)
+                if deeper:
+                    return deeper
+
+    wrapped = node.get("card")
+    if isinstance(wrapped, dict):
+        wrapped_type = str(wrapped.get("type") or "")
+        if wrapped_type == "heading" or wrapped_type.endswith(":heading"):
+            direct = _direct_title_label(wrapped)
+            if direct:
+                return direct
+        nested = _nested_heading_label(wrapped)
+        if nested:
+            return nested
+    return None
+
+
+def _is_generic_locator_label(label: str) -> bool:
+    """True for fallbacks like ``Card 3`` / ``Section 0`` / ``Card``."""
+    text = (label or "").strip()
+    if not text:
+        return True
+    low = text.lower()
+    if low in {"card", "section", "view", "untitled"}:
+        return True
+    parts = low.split()
+    return len(parts) == 2 and parts[0] in {"card", "section", "view"} and parts[1].isdigit()
+
+
 def _node_label(node: dict[str, Any], *, fallback: str) -> str:
-    """Human-readable label: title/heading/name — never fall back to card type as the name."""
-    for key in ("title", "heading", "name"):
-        val = node.get(key)
-        if isinstance(val, str) and val.strip():
-            return val.strip()
+    """Human-readable label — prefer mushroom/HA text fields over card type.
+
+    Field order: primary, secondary, label, name, title, heading (mushroom
+    template cards expose primary/secondary; stock cards use title/heading/name).
+    Then nested heading/title children (sections / grids). Never prefer type
+    as the display name.
+    """
+    direct = _direct_title_label(node)
+    if direct is not None:
+        return direct
+    nested = _nested_heading_label(node)
+    if nested is not None:
+        return nested
     # Markdown cards often use content as the visible title.
     if str(node.get("type") or "") == "markdown":
         content = node.get("content")
@@ -296,10 +385,25 @@ def list_visibility_nodes(config: dict[str, Any]) -> list[dict[str, Any]]:
                 )
                 cards = section.get("cards")
                 if isinstance(cards, list):
+                    section_heading: str | None = None
                     for c_idx, card in enumerate(cards):
                         if not isinstance(card, dict):
                             continue
+                        card_type = str(card.get("type") or "")
+                        direct = _direct_title_label(card)
+                        if card_type == "heading" or card_type.endswith(":heading"):
+                            if direct:
+                                section_heading = direct
                         card_label = _node_label(card, fallback=f"Card {c_idx}")
+                        # Untitled cards under a section heading inherit that heading
+                        # (e.g. Building Mode controls grid after a heading card).
+                        if (
+                            _is_generic_locator_label(card_label)
+                            and section_heading
+                            and card_type not in ("heading",)
+                            and not card_type.endswith(":heading")
+                        ):
+                            card_label = section_heading
                         results.append(
                             {
                                 "kind": "card",
@@ -320,10 +424,23 @@ def list_visibility_nodes(config: dict[str, Any]) -> list[dict[str, Any]]:
                         )
         cards = view.get("cards")
         if isinstance(cards, list):
+            view_heading: str | None = None
             for c_idx, card in enumerate(cards):
                 if not isinstance(card, dict):
                     continue
+                card_type = str(card.get("type") or "")
+                direct = _direct_title_label(card)
+                if card_type == "heading" or card_type.endswith(":heading"):
+                    if direct:
+                        view_heading = direct
                 card_label = _node_label(card, fallback=f"Card {c_idx}")
+                if (
+                    _is_generic_locator_label(card_label)
+                    and view_heading
+                    and card_type not in ("heading",)
+                    and not card_type.endswith(":heading")
+                ):
+                    card_label = view_heading
                 results.append(
                     {
                         "kind": "card",
@@ -488,7 +605,7 @@ def audit_dashboard_user_visibility(
             continue
         users = collect_visibility_user_ids(visibility)
         elem_type = _audit_element_type(node.get("kind"), node, resolved)
-        # Prefer real title from resolved Lovelace node (heading/title/name).
+        # Prefer real title from resolved Lovelace node (mushroom primary, title, …).
         label = _node_label(
             resolved,
             fallback=str(node.get("label") or node.get("kind") or "Untitled"),
@@ -562,7 +679,10 @@ def audit_dashboard_user_visibility(
 def _card_preview(card: dict[str, Any]) -> dict[str, Any]:
     """Compact fields for visual preview tiles."""
     ntype = str(card.get("type") or "card")
-    label = _node_label(card, fallback=ntype)
+    # Never use card type as the display name (mushroom → custom:mushroom-…).
+    label = _node_label(card, fallback="Card")
+    if label.strip().lower() == ntype.strip().lower():
+        label = "Card"
     snippet = ""
     if ntype == "heading":
         snippet = str(card.get("heading") or label)
@@ -575,6 +695,16 @@ def _card_preview(card: dict[str, Any]) -> dict[str, Any]:
             if line:
                 snippet = line[:120]
                 break
+    elif _human_label_value(card.get("primary")) or _human_label_value(card.get("secondary")):
+        # Mushroom template / chips: show secondary under primary when both exist.
+        primary = _human_label_value(card.get("primary"))
+        secondary = _human_label_value(card.get("secondary"))
+        if primary and secondary and label == primary:
+            snippet = secondary
+        elif secondary and label != secondary:
+            snippet = secondary
+        elif primary and label != primary:
+            snippet = primary
     elif isinstance(card.get("entity"), str):
         snippet = card["entity"]
     elif isinstance(card.get("entities"), list) and card["entities"]:
@@ -596,6 +726,8 @@ def _card_preview(card: dict[str, Any]) -> dict[str, Any]:
             "vertical-stack": "mdi:view-sequential",
             "grid": "mdi:view-grid",
         }.get(ntype, "mdi:card")
+        if isinstance(ntype, str) and ntype.startswith("custom:mushroom"):
+            icon = "mdi:mushroom"
     return {
         "label": label,
         "snippet": snippet,
@@ -661,15 +793,30 @@ def build_dashboard_preview_tree(config: dict[str, Any]) -> list[dict[str, Any]]
                 }
                 cards = section.get("cards")
                 if isinstance(cards, list):
+                    section_heading: str | None = None
                     for c_idx, card in enumerate(cards):
                         if not isinstance(card, dict):
                             continue
+                        card_type = str(card.get("type") or "")
+                        direct = _direct_title_label(card)
+                        if card_type == "heading" or card_type.endswith(":heading"):
+                            if direct:
+                                section_heading = direct
                         preview = _card_preview(card)
+                        label = preview["label"]
+                        if (
+                            _is_generic_locator_label(str(label))
+                            and section_heading
+                            and card_type not in ("heading",)
+                            and not card_type.endswith(":heading")
+                        ):
+                            label = section_heading
+                            preview = {**preview, "label": label}
                         section_node["cards"].append(
                             {
                                 "kind": "card",
                                 **preview,
-                                "breadcrumb": f"{view_label} › {section_label} › {preview['label']}",
+                                "breadcrumb": f"{view_label} › {section_label} › {label}",
                                 "locator": {
                                     "kind": "card",
                                     "view_index": v_idx,
@@ -685,15 +832,30 @@ def build_dashboard_preview_tree(config: dict[str, Any]) -> list[dict[str, Any]]
 
         cards = view.get("cards")
         if isinstance(cards, list):
+            view_heading: str | None = None
             for c_idx, card in enumerate(cards):
                 if not isinstance(card, dict):
                     continue
+                card_type = str(card.get("type") or "")
+                direct = _direct_title_label(card)
+                if card_type == "heading" or card_type.endswith(":heading"):
+                    if direct:
+                        view_heading = direct
                 preview = _card_preview(card)
+                label = preview["label"]
+                if (
+                    _is_generic_locator_label(str(label))
+                    and view_heading
+                    and card_type not in ("heading",)
+                    and not card_type.endswith(":heading")
+                ):
+                    label = view_heading
+                    preview = {**preview, "label": label}
                 view_node["cards"].append(
                     {
                         "kind": "card",
                         **preview,
-                        "breadcrumb": f"{view_label} › {preview['label']}",
+                        "breadcrumb": f"{view_label} › {label}",
                         "locator": {
                             "kind": "card",
                             "view_index": v_idx,
