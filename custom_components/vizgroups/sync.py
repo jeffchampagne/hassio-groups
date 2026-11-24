@@ -416,6 +416,13 @@ def _node_label(node: dict[str, Any], *, fallback: str) -> str:
             return first.strip()
         if isinstance(first, dict) and first.get("entity"):
             return str(first.get("entity"))
+    # Conditional wrappers have no title — borrow from the inner card.
+    if str(node.get("type") or "") == "conditional":
+        wrapped = node.get("card")
+        if isinstance(wrapped, dict):
+            inner = _node_label(wrapped, fallback="")
+            if inner:
+                return inner
     # Do not use type as the display name (e.g. "heading") — keep type in its own field.
     return fallback
 
@@ -688,6 +695,31 @@ def visibility_has_user_condition(visibility: Any) -> bool:
     if isinstance(visibility, list):
         return any(visibility_has_user_condition(item) for item in visibility)
     return False
+
+
+def _has_user_gate(node: dict[str, Any]) -> bool:
+    """True when the node has a visibility/conditions tree that may contain users."""
+    if isinstance(node.get("visibility"), list):
+        return True
+    return str(node.get("type") or "") == "conditional" and isinstance(
+        node.get("conditions"), list
+    )
+
+
+def _user_gate_tree(node: dict[str, Any]) -> Any:
+    """Return the condition tree that gates people visibility for this node."""
+    # Conditionals are gated by ``conditions``; prefer that even if a stale
+    # sibling ``visibility`` people block was invented by an older sync.
+    if str(node.get("type") or "") == "conditional":
+        conditions = node.get("conditions")
+        if isinstance(conditions, list) and (
+            visibility_has_user_condition(conditions) or conditions
+        ):
+            return conditions
+    visibility = node.get("visibility")
+    if visibility_has_user_condition(visibility):
+        return visibility
+    return visibility
 
 
 def collect_visibility_user_ids(visibility: Any) -> list[str]:
