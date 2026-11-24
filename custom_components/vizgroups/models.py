@@ -152,6 +152,7 @@ class Binding:
     fingerprint: str = ""
     stale: bool = False
     label: str = ""
+    breadcrumb: str = ""
     created: str = field(default_factory=_utcnow_iso)
     updated: str = field(default_factory=_utcnow_iso)
 
@@ -165,6 +166,7 @@ class Binding:
             "fingerprint": self.fingerprint,
             "stale": self.stale,
             "label": self.label,
+            "breadcrumb": self.breadcrumb,
             "created": self.created,
             "updated": self.updated,
         }
@@ -183,6 +185,7 @@ class Binding:
             fingerprint=str(data.get("fingerprint") or ""),
             stale=bool(data.get("stale", False)),
             label=str(data.get("label") or ""),
+            breadcrumb=str(data.get("breadcrumb") or ""),
             created=str(data.get("created") or _utcnow_iso()),
             updated=str(data.get("updated") or _utcnow_iso()),
         )
@@ -246,6 +249,7 @@ def new_binding(
     merge_mode: str = MERGE_ENSURE_USER_BRANCH,
     fingerprint: str = "",
     label: str = "",
+    breadcrumb: str = "",
     binding_id: str | None = None,
 ) -> Binding:
     """Create a new binding."""
@@ -264,6 +268,7 @@ def new_binding(
         merge_mode=merge_mode if merge_mode in MERGE_MODES else MERGE_ENSURE_USER_BRANCH,
         fingerprint=fingerprint,
         label=label,
+        breadcrumb=breadcrumb,
         created=now,
         updated=now,
     )

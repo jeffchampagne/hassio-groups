@@ -3,7 +3,11 @@
  * Friendly names primary; user IDs as subtitle on detail rows only.
  * Visibility is UX, not ACL.
  *
- * UX: edit bindings + visual dashboard preview picker; editable group IDs; MDI icon picker.
+ * UX: edit bindings + visual dashboard preview picker; editable group IDs;
+ * MDI icon picker (loads HA /static/mdi/iconList.json for full-set search).
+ * Live hotfix 2026-11-24: member autosave + picker under selected target + table friendly names.
+ * Live 2026-11-24: Convert audit Manual Dashboard Config → Viz Groups (PR #10 + normalizeLocator).
+ * Live 2026-11-24: Manage visibility breadcrumbs (PR #13).
  */
 import {
   LitElement,
@@ -14,8 +18,13 @@ import {
 
 const DOMAIN = "vizgroups";
 
-/** Curated MDI set for groups / people / home — type-to-filter; free-text still allowed. */
-const MDI_ICON_CHOICES = [
+const ICON_RESULT_LIMIT = 120;
+
+/**
+ * Suggested icons shown when the browse filter is empty.
+ * Full search uses Home Assistant's /static/mdi/iconList.json (same set as ha-icon-picker).
+ */
+const MDI_ICON_SUGGESTIONS = [
   "mdi:account",
   "mdi:account-circle",
   "mdi:account-group",
@@ -120,6 +129,122 @@ const MDI_ICON_CHOICES = [
   "mdi:close-circle",
 ];
 
+/** @type {Array<{id: string, name: string, keywords: string[], haystack: string}>|null} */
+let _mdiIconIndex = null;
+/** True when the index came from HA's /static/mdi/iconList.json (not curated fallback). */
+let _mdiIconFromHa = false;
+/** @type {Promise<Array<{id: string, name: string, keywords: string[], haystack: string}>>|null} */
+let _mdiIconLoadPromise = null;
+
+function _iconEntryFromName(iconId, keywords = []) {
+  const id = iconId.startsWith("mdi:") || iconId.includes(":")
+    ? iconId
+    : `mdi:${iconId}`;
+  const name = id.includes(":") ? id.split(":").slice(1).join(":") : id;
+  const kw = (keywords || []).map((k) => String(k).toLowerCase());
+  const haystack = [name, ...kw].join(" ").toLowerCase();
+  return { id, name, keywords: kw, haystack };
+}
+
+function _fallbackIconIndex() {
+  return MDI_ICON_SUGGESTIONS.map((id) => _iconEntryFromName(id));
+}
+
+/**
+ * Load the same MDI catalog Home Assistant's icon picker uses
+ * (`hass_frontend/static/mdi/iconList.json` → `/static/mdi/iconList.json`),
+ * plus any custom icon sets that expose getIconList().
+ */
+async function loadMdiIconIndex() {
+  if (_mdiIconIndex) return _mdiIconIndex;
+  if (_mdiIconLoadPromise) return _mdiIconLoadPromise;
+
+  _mdiIconLoadPromise = (async () => {
+    const byId = new Map();
+    let fromHa = false;
+    const add = (entry) => {
+      if (!entry?.id || byId.has(entry.id)) return;
+      byId.set(entry.id, entry);
+    };
+
+    try {
+      const res = await fetch("/static/mdi/iconList.json", {
+        credentials: "same-origin",
+      });
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`);
+      }
+      const data = await res.json();
+      if (!Array.isArray(data)) {
+        throw new Error("iconList.json was not an array");
+      }
+      for (const icon of data) {
+        if (typeof icon === "string") {
+          add(_iconEntryFromName(icon));
+        } else if (icon && typeof icon === "object" && icon.name) {
+          add(_iconEntryFromName(icon.name, icon.keywords));
+        }
+      }
+      fromHa = byId.size > 0;
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        "Viz Groups: could not load /static/mdi/iconList.json; using curated fallback",
+        err,
+      );
+      for (const entry of _fallbackIconIndex()) add(entry);
+    }
+
+    try {
+      const custom = window.customIcons || {};
+      await Promise.all(
+        Object.keys(custom).map(async (prefix) => {
+          const helper = custom[prefix];
+          if (!helper || typeof helper.getIconList !== "function") return;
+          try {
+            const list = await helper.getIconList();
+            if (!Array.isArray(list)) return;
+            for (const icon of list) {
+              const name = typeof icon === "string" ? icon : icon?.name;
+              if (!name) continue;
+              const keywords =
+                typeof icon === "object" && Array.isArray(icon.keywords)
+                  ? icon.keywords
+                  : [];
+              add(_iconEntryFromName(`${prefix}:${name}`, keywords));
+            }
+          } catch (err) {
+            // eslint-disable-next-line no-console
+            console.warn(`Viz Groups: custom icon list failed for ${prefix}`, err);
+          }
+        }),
+      );
+    } catch (_err) {
+      /* customIcons optional */
+    }
+
+    if (!byId.size) {
+      for (const entry of _fallbackIconIndex()) add(entry);
+      fromHa = false;
+    }
+
+    _mdiIconFromHa = fromHa;
+    _mdiIconIndex = Array.from(byId.values()).sort((a, b) =>
+      a.id.localeCompare(b.id),
+    );
+    return _mdiIconIndex;
+  })();
+
+  try {
+    return await _mdiIconLoadPromise;
+  } catch (err) {
+    _mdiIconLoadPromise = null;
+    _mdiIconFromHa = false;
+    _mdiIconIndex = _fallbackIconIndex();
+    return _mdiIconIndex;
+  }
+}
+
 class VizGroupsPanel extends LitElement {
   static properties = {
     hass: { attribute: false },
@@ -134,6 +259,9 @@ class VizGroupsPanel extends LitElement {
     _groupIdManual: { state: true },
     _iconFilter: { state: true },
     _iconPickerOpen: { state: true },
+    _iconCatalogReady: { state: true },
+    _iconCatalogCount: { state: true },
+    _iconCatalogError: { state: true },
     _nodes: { state: true },
     _previewTree: { state: true },
     _nodesBusy: { state: true },
@@ -150,6 +278,7 @@ class VizGroupsPanel extends LitElement {
     _auditBusy: { state: true },
     _auditReport: { state: true },
     _auditExpanded: { state: true },
+    _refreshAuditAfterSave: { state: true },
     _clipStatus: { state: true },
     _pasteOpen: { state: true },
     _pasteDraft: { state: true },
@@ -464,6 +593,12 @@ class VizGroupsPanel extends LitElement {
     .audit-users li { display: flex; align-items: center; gap: 10px; }
     .audit-users .member-meta strong { font-weight: 600; }
     .audit-users .member-meta span { font-size: 0.8rem; color: var(--hg-text-secondary); word-break: break-all; }
+    .audit-source { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+    .audit-source .pill,
+    .audit-source .btn {
+      text-transform: none;
+      letter-spacing: normal;
+    }
     .sensor-attrs { margin: 8px 0 0; padding: 0; list-style: none; display: grid; gap: 4px; }
     .sensor-attrs li {
       display: grid; grid-template-columns: 8.5rem 1fr; gap: 10px;
@@ -521,6 +656,9 @@ class VizGroupsPanel extends LitElement {
       background: var(--hg-card); overflow: hidden;
     }
     .icon-picker-toolbar { padding: 10px; border-bottom: 1px solid var(--hg-divider); }
+    .icon-meta {
+      padding: 0 12px 8px; font-size: 0.75rem; color: var(--hg-text-secondary); line-height: 1.35;
+    }
     .icon-grid {
       display: grid; grid-template-columns: repeat(auto-fill, minmax(88px, 1fr));
       gap: 6px; max-height: 220px; overflow: auto; padding: 10px;
@@ -762,6 +900,9 @@ class VizGroupsPanel extends LitElement {
     this._groupIdManual = false;
     this._iconFilter = "";
     this._iconPickerOpen = false;
+    this._iconCatalogReady = false;
+    this._iconCatalogCount = 0;
+    this._iconCatalogError = false;
     this._nodes = [];
     this._previewTree = [];
     this._nodesBusy = false;
@@ -778,10 +919,13 @@ class VizGroupsPanel extends LitElement {
     this._auditBusy = false;
     this._auditReport = null;
     this._auditExpanded = {};
+    this._refreshAuditAfterSave = false;
     this._clipStatus = "";
     this._clipStatusTimer = null;
     this._pasteOpen = false;
     this._pasteDraft = "";
+    this._memberSaveSeq = 0;
+    this._memberSavePromise = null;
   }
 
   connectedCallback() {
@@ -805,6 +949,7 @@ class VizGroupsPanel extends LitElement {
         if (ev && ev.event === "snapshot") {
           this._data = ev;
           this._error = "";
+          void this._enrichBindingBreadcrumbs();
         }
       },
       { type: `${DOMAIN}/subscribe` }
@@ -825,7 +970,10 @@ class VizGroupsPanel extends LitElement {
         type: `${DOMAIN}/${type}`,
         ...payload,
       });
-      if (result && (result.groups || result.users)) this._data = result;
+      if (result && (result.groups || result.users)) {
+        this._data = result;
+        void this._enrichBindingBreadcrumbs();
+      }
       return result;
     } catch (err) {
       this._error = err?.message || String(err);
@@ -857,6 +1005,101 @@ class VizGroupsPanel extends LitElement {
 
   get _selectedGroup() {
     return this._groups.find((g) => g.id === this._selectedGroupId) || null;
+  }
+
+
+
+  _locatorsMatch(a = {}, b = {}) {
+    const kind = a.kind || b.kind || "card";
+    if ((a.kind || "card") !== (b.kind || "card")) return false;
+    const pathA = a.view_path || null;
+    const pathB = b.view_path || null;
+    if (pathA && pathB) {
+      if (pathA !== pathB) return false;
+    } else if (a.view_index !== b.view_index) {
+      return false;
+    }
+    if (kind === "view") return true;
+    if (a.section_index !== b.section_index) return false;
+    if (kind === "section") return true;
+    if (a.card_index !== b.card_index) return false;
+    const nestA = (a.extra && a.extra.nested_path) || a.nested_path || [];
+    const nestB = (b.extra && b.extra.nested_path) || b.nested_path || [];
+    return JSON.stringify(nestA) === JSON.stringify(nestB);
+  }
+
+  async _enrichBindingBreadcrumbs() {
+    const bindings = this._data?.bindings || [];
+    const missing = bindings.filter((b) => !(b.breadcrumb && String(b.breadcrumb).trim()));
+    if (!this.hass) return;
+    if (!missing.length) {
+      this.requestUpdate();
+      return;
+    }
+    const byDash = {};
+    for (const b of missing) {
+      const path = b.dashboard_url_path || "lovelace";
+      (byDash[path] || (byDash[path] = [])).push(b);
+    }
+    for (const [path, list] of Object.entries(byDash)) {
+      let nodes = [];
+      try {
+        const res = await this.hass.connection.sendMessagePromise({
+          type: `${DOMAIN}/dashboard_nodes`,
+          dashboard_url_path: path,
+        });
+        nodes = res?.nodes || [];
+      } catch (_err) {
+        continue;
+      }
+      for (const b of list) {
+        const match = nodes.find((n) => this._locatorsMatch(b.locator || {}, n.locator || {}));
+        if (match?.breadcrumb) b.breadcrumb = match.breadcrumb;
+      }
+    }
+    this.requestUpdate();
+  }
+
+
+  /** Prefer HA friendly_name when a label looks like domain.object_id. */
+  _looksLikeEntityId(text = "") {
+    const raw = String(text || "").trim();
+    if (!raw || raw.includes(" ") || (raw.match(/\./g) || []).length !== 1) return false;
+    const [domain, objectId] = raw.split(".");
+    return !!(domain && objectId && /^[a-z0-9_]+$/i.test(domain) && /^[a-z0-9_]+$/i.test(objectId));
+  }
+
+  _entityFriendlyName(entityId) {
+    const state = this.hass?.states?.[entityId];
+    const name = state?.attributes?.friendly_name;
+    return (typeof name === "string" && name.trim()) ? name.trim() : "";
+  }
+
+  _displayLabel(text = "") {
+    const raw = String(text || "").trim();
+    if (!raw) return raw;
+    if (raw.includes(" › ")) {
+      return raw.split(" › ").map((part) => this._displayLabel(part)).join(" › ");
+    }
+    if (this._looksLikeEntityId(raw)) {
+      return this._entityFriendlyName(raw) || raw;
+    }
+    return raw;
+  }
+
+  /** Dashboard title from WS list_dashboards payload; fall back to url_path. */
+  _dashboardTitle(urlPath) {
+    const path = urlPath || "lovelace";
+    const dash = this._dashboards.find((d) => d.url_path === path);
+    if (dash?.title) return dash.title;
+    if (path === "lovelace") return "Overview";
+    return path;
+  }
+
+  /** Group friendly name; fall back to id when the group is missing. */
+  _groupName(groupId) {
+    const g = this._groups.find((x) => x.id === groupId);
+    return g?.name || groupId;
   }
 
   _initials(name) {
@@ -893,14 +1136,89 @@ class VizGroupsPanel extends LitElement {
     return html`<ha-icon .icon=${name}></ha-icon>`;
   }
 
+  async _ensureIconCatalog() {
+    if (this._iconCatalogReady && _mdiIconIndex) return;
+    try {
+      const index = await loadMdiIconIndex();
+      this._iconCatalogCount = index.length;
+      this._iconCatalogError = !_mdiIconFromHa;
+      this._iconCatalogReady = true;
+    } catch (_err) {
+      this._iconCatalogCount = MDI_ICON_SUGGESTIONS.length;
+      this._iconCatalogError = true;
+      this._iconCatalogReady = true;
+    }
+  }
+
+  _toggleIconPicker() {
+    const next = !this._iconPickerOpen;
+    this._iconPickerOpen = next;
+    if (next) this._ensureIconCatalog();
+  }
+
+  /**
+   * Search the full HA MDI catalog (name + keywords). Empty filter shows suggestions.
+   * @returns {{ icons: string[], total: number, mode: string }}
+   */
   _filteredIcons() {
-    const q = String(this._iconFilter || "").trim().toLowerCase().replace(/^mdi:/, "");
+    const q = String(this._iconFilter || "")
+      .trim()
+      .toLowerCase()
+      .replace(/^mdi:/, "")
+      .replace(/\s+/g, "-");
     const current = this._normalizeIcon(this._draft?.icon);
-    const base = MDI_ICON_CHOICES.includes(current)
-      ? MDI_ICON_CHOICES
-      : [current, ...MDI_ICON_CHOICES];
-    if (!q) return base;
-    return base.filter((icon) => icon.toLowerCase().includes(q));
+    const index = _mdiIconIndex;
+
+    const withCurrent = (ids) => {
+      if (!current || ids.includes(current)) return ids;
+      return [current, ...ids];
+    };
+
+    if (!q) {
+      const suggested = withCurrent([...MDI_ICON_SUGGESTIONS]);
+      return {
+        icons: suggested.slice(0, ICON_RESULT_LIMIT),
+        total: suggested.length,
+        mode: this._iconCatalogReady ? "suggest" : "loading",
+      };
+    }
+
+    if (!index || !index.length) {
+      const fallback = withCurrent(
+        MDI_ICON_SUGGESTIONS.filter((icon) =>
+          icon.toLowerCase().includes(q),
+        ),
+      );
+      return {
+        icons: fallback.slice(0, ICON_RESULT_LIMIT),
+        total: fallback.length,
+        mode: this._iconCatalogReady ? "search" : "loading",
+      };
+    }
+
+    const ranked = [];
+    for (const entry of index) {
+      const name = entry.name.toLowerCase();
+      const parts = name.split("-");
+      const id = entry.id.toLowerCase();
+      let rank = 0;
+      if (parts.includes(q) || name === q) rank = 1;
+      else if (entry.keywords.includes(q)) rank = 2;
+      else if (id.includes(q) || name.includes(q)) rank = 3;
+      else if (entry.keywords.some((word) => word.includes(q))) rank = 4;
+      else if (entry.haystack.includes(q.replace(/-/g, " "))) rank = 5;
+      if (rank) ranked.push({ id: entry.id, rank });
+    }
+    ranked.sort((a, b) => a.rank - b.rank || a.id.localeCompare(b.id));
+    let ids = ranked.map((r) => r.id);
+    if (current && !ids.includes(current) && current.toLowerCase().includes(q)) {
+      ids = [current, ...ids];
+    }
+    return {
+      icons: ids.slice(0, ICON_RESULT_LIMIT),
+      total: ids.length,
+      mode: "search",
+    };
   }
 
   _onNameInput(e) {
@@ -933,6 +1251,7 @@ class VizGroupsPanel extends LitElement {
     };
     this._userSearch = "";
     this._view = "editor";
+    this._ensureIconCatalog();
   }
 
   _openEditGroup(group) {
@@ -951,29 +1270,94 @@ class VizGroupsPanel extends LitElement {
     };
     this._userSearch = "";
     this._view = "editor";
+    this._ensureIconCatalog();
   }
 
   _toggleMember(userId) {
     if (!this._draft) return;
     const set = new Set(this._draft.member_user_ids || []);
-    if (set.has(userId)) set.delete(userId);
+    const removing = set.has(userId);
+    if (removing) set.delete(userId);
     else set.add(userId);
     this._draft = { ...this._draft, member_user_ids: [...set] };
+    void this._persistMembers({
+      successMsg: removing ? "Member removed" : "Member added",
+    });
   }
 
   _addMember(userId) {
     if (!this._draft || !userId) return;
     const set = new Set(this._draft.member_user_ids || []);
+    if (set.has(userId)) return;
     set.add(userId);
     this._draft = { ...this._draft, member_user_ids: [...set] };
+    void this._persistMembers({ successMsg: "Member added" });
   }
 
   _removeMember(userId) {
     if (!this._draft) return;
+    const before = this._draft.member_user_ids || [];
+    if (!before.includes(userId)) return;
     this._draft = {
       ...this._draft,
-      member_user_ids: (this._draft.member_user_ids || []).filter((id) => id !== userId),
+      member_user_ids: before.filter((id) => id !== userId),
     };
+    void this._persistMembers({ successMsg: "Member removed" });
+  }
+
+  /**
+   * Persist membership for an existing group immediately (no full-panel busy).
+   * Uses saved group details so unsaved name/description/icon edits stay draft-only.
+   * New (unsaved) groups stay local until Save.
+   */
+  async _persistMembers({ successMsg = "Members saved" } = {}) {
+    const groupId = this._selectedGroupId;
+    if (!groupId || !this._draft) return false;
+    // Full Save owns the write — skip to avoid racing / double-saving.
+    if (this._busy) return false;
+
+    const existing = this._groups.find((g) => g.id === groupId);
+    if (!existing) return false;
+
+    const seq = ++this._memberSaveSeq;
+    const member_user_ids = [...(this._draft.member_user_ids || [])];
+    const run = (async () => {
+      try {
+        const result = await this.hass.connection.sendMessagePromise({
+          type: `${DOMAIN}/save_group`,
+          name: existing.name,
+          group_id: groupId,
+          previous_group_id: groupId,
+          description: existing.description || "",
+          icon: existing.icon || "mdi:account-group",
+          member_user_ids,
+        });
+        if (seq !== this._memberSaveSeq) return false;
+        if (result && (result.groups || result.users)) this._data = result;
+        this._error = "";
+        this._setClipStatus(successMsg);
+        return true;
+      } catch (err) {
+        if (seq !== this._memberSaveSeq) return false;
+        this._error = err?.message || String(err);
+        this._setClipStatus("Could not save members");
+        // Revert membership to last known saved snapshot; keep detail draft edits.
+        const saved = (this._data?.groups || []).find((g) => g.id === groupId);
+        if (saved && this._draft && this._selectedGroupId === groupId) {
+          this._draft = {
+            ...this._draft,
+            member_user_ids: [...(saved.member_user_ids || [])],
+          };
+        }
+        return false;
+      }
+    })();
+    this._memberSavePromise = run;
+    try {
+      return await run;
+    } finally {
+      if (this._memberSavePromise === run) this._memberSavePromise = null;
+    }
   }
 
 
@@ -1081,6 +1465,11 @@ class VizGroupsPanel extends LitElement {
       }
     }
     this._draft = { ...this._draft, member_user_ids: [...set] };
+    if (added) {
+      void this._persistMembers({
+        successMsg: `Added ${added} member${added === 1 ? "" : "s"}`,
+      });
+    }
     return added;
   }
 
@@ -1193,6 +1582,15 @@ class VizGroupsPanel extends LitElement {
     if (!groupId) {
       this._error = "Group ID is required";
       return;
+    }
+    // Let any in-flight membership autosave finish (or be superseded by this write).
+    this._memberSaveSeq += 1;
+    if (this._memberSavePromise) {
+      try {
+        await this._memberSavePromise;
+      } catch (_err) {
+        /* membership error already surfaced; full save continues */
+      }
     }
     await this._call("save_group", {
       name: this._draft.name.trim(),
@@ -1426,18 +1824,13 @@ class VizGroupsPanel extends LitElement {
 
   _selectNode(node) {
     if (!node?.locator) return;
-    const loc = { ...node.locator };
-    // Avoid undefined keys polluting locator
-    Object.keys(loc).forEach((k) => {
-      if (loc[k] === undefined || loc[k] === null || loc[k] === "") {
-        if (k !== "view_path") delete loc[k];
-      }
-    });
+    const loc = this._normalizeLocator(node.locator);
     this._bindingDraft = {
       ...this._bindingDraft,
       locator: loc,
       fingerprint: node.fingerprint || "",
       label: this._bindingDraft.label || node.label || "",
+      breadcrumb: node.breadcrumb || "",
     };
     const title = node.label || node.snippet || loc.kind || "Target";
     const crumb = node.breadcrumb || "";
@@ -1476,6 +1869,7 @@ class VizGroupsPanel extends LitElement {
   }
 
   _openBindingCreate() {
+    this._pendingAuditRefresh = null;
     this._resetNodeBrowser();
     this._bindingDraft = {
       binding_id: "",
@@ -1483,6 +1877,7 @@ class VizGroupsPanel extends LitElement {
       include: [],
       exclude: [],
       label: "",
+      breadcrumb: "",
       locator: { kind: "card", view_index: 0, section_index: 0, card_index: 0 },
       merge_mode: "ensure_user_branch",
       fingerprint: "",
@@ -1490,37 +1885,122 @@ class VizGroupsPanel extends LitElement {
     this._view = "bindings";
   }
 
+
+  /** Drop indices that do not apply to the locator kind (section must not keep card_index). */
+  _normalizeLocator(loc = {}) {
+    const kind = loc.kind || "card";
+    const out = { kind };
+    if (loc.view_path) out.view_path = loc.view_path;
+    if (loc.view_index != null && loc.view_index !== "") out.view_index = Number(loc.view_index);
+    else if (!out.view_path) out.view_index = 0;
+    // Preserve nested expander/stack/conditional path from audit/picker.
+    const nested = (loc.extra && Array.isArray(loc.extra.nested_path))
+      ? loc.extra.nested_path
+      : (Array.isArray(loc.nested_path) ? loc.nested_path : null);
+    if (kind === "view") {
+      return out;
+    }
+    if (loc.section_index != null && loc.section_index !== "") {
+      out.section_index = Number(loc.section_index);
+    }
+    if (kind === "section") {
+      return out;
+    }
+    if (loc.card_index != null && loc.card_index !== "") {
+      out.card_index = Number(loc.card_index);
+    } else {
+      out.card_index = 0;
+    }
+    if (nested && nested.length) {
+      out.extra = { nested_path: nested.map((step) => (step === "card" ? "card" : Number(step))) };
+    }
+    return out;
+  }
+
+
+  /** Open Set visibility with audit row target preselected (manual → Viz Groups). */
+  _openConvertFromAudit(row) {
+    if (!row || row.status === "managed") return;
+    const loc = row.locator || {};
+    const dashboard =
+      this._auditDashboard
+      || this._auditReport?.dashboard_url_path
+      || this._dashboards[0]?.url_path
+      || "lovelace";
+    this._bindingDraft = {
+      binding_id: "",
+      dashboard_url_path: dashboard,
+      include: [],
+      exclude: [],
+      label: this._displayLabel(row.label || ""),
+      breadcrumb: this._displayLabel(row.breadcrumb || ""),
+      locator: this._normalizeLocator(loc),
+      merge_mode: "ensure_user_branch",
+      fingerprint: row.fingerprint || "",
+    };
+    this._resetNodeBrowser();
+    const title = this._displayLabel(row.label || "") || this._locatorSummary(
+      this._bindingDraft.locator,
+      this._bindingDraft.fingerprint,
+      "",
+    );
+    this._selectedNodeLabel = title;
+    const bits = [];
+    if (row.breadcrumb && this._displayLabel(row.breadcrumb) !== title) bits.push(this._displayLabel(row.breadcrumb));
+    else {
+      const summary = this._locatorSummary(
+        this._bindingDraft.locator,
+        this._bindingDraft.fingerprint,
+        "",
+      );
+      if (summary && summary !== title) bits.push(summary);
+    }
+    if (row.type || loc.kind) bits.push(row.type || loc.kind);
+    this._selectedNodeSubtitle = bits.join(" · ");
+    this._selectedNodeKey = this._nodeKey({
+      locator: this._bindingDraft.locator,
+      fingerprint: this._bindingDraft.fingerprint,
+    });
+    this._advancedLocatorOpen = false;
+    this._excludeOpen = false;
+    this._pickerStep = "groups";
+    this._view = "bindings";
+    this._error = "";
+    this._refreshAuditAfterSave = true;
+    this.updateComplete.then(() => {
+      const el = this.renderRoot?.querySelector?.(".binding-form");
+      el?.scrollIntoView?.({ behavior: "smooth", block: "start" });
+    });
+  }
+
   _openEditBinding(binding) {
+
     const loc = binding.locator || {};
     this._bindingDraft = {
       binding_id: binding.id,
       dashboard_url_path: binding.dashboard_url_path || "lovelace",
       include: [...(binding.expression?.include || [])],
       exclude: [...(binding.expression?.exclude || [])],
-      label: binding.label || "",
-      locator: {
-        kind: loc.kind || "card",
-        view_path: loc.view_path ?? "",
-        view_index: loc.view_index ?? 0,
-        section_index: loc.section_index ?? 0,
-        card_index: loc.card_index ?? 0,
-        ...(this._nestedPath(loc).length
-          ? { extra: { nested_path: this._nestedPath(loc) } }
-          : {}),
-      },
+      label: this._displayLabel(binding.label || ""),
+      breadcrumb: this._displayLabel(binding.breadcrumb || ""),
+      locator: this._normalizeLocator(loc),
       merge_mode: binding.merge_mode || "ensure_user_branch",
       fingerprint: binding.fingerprint || "",
     };
     this._resetNodeBrowser();
-    const editTitle = binding.label || this._locatorSummary(
+    const editTitle = this._displayLabel(binding.label || "") || this._locatorSummary(
       this._bindingDraft.locator,
       this._bindingDraft.fingerprint,
       "",
     );
     this._selectedNodeLabel = editTitle;
     const editBits = [];
-    const summary = this._locatorSummary(this._bindingDraft.locator, this._bindingDraft.fingerprint, "");
-    if (summary && summary !== editTitle) editBits.push(summary);
+    const crumb = this._displayLabel(binding.breadcrumb || "");
+    if (crumb && crumb !== editTitle) editBits.push(crumb);
+    else {
+      const summary = this._locatorSummary(this._bindingDraft.locator, this._bindingDraft.fingerprint, "");
+      if (summary && summary !== editTitle) editBits.push(summary);
+    }
     if (loc.kind) editBits.push(loc.kind);
     this._selectedNodeSubtitle = editBits.join(" · ");
     this._selectedNodeKey = this._nodeKey({
@@ -1540,28 +2020,35 @@ class VizGroupsPanel extends LitElement {
       this._error = "At least one include group is required";
       return;
     }
-    const locator = {
-      kind: d.locator?.kind || "card",
-      view_index: Number(d.locator?.view_index ?? 0),
-      section_index: Number(d.locator?.section_index ?? 0),
-      card_index: Number(d.locator?.card_index ?? 0),
-    };
-    if (d.locator?.view_path) locator.view_path = d.locator.view_path;
-    const nest = this._nestedPath(d.locator || {});
-    if (nest.length) locator.extra = { nested_path: nest };
+    const locator = this._normalizeLocator(d.locator || {});
+    const dashboard = d.dashboard_url_path || "lovelace";
+    const refreshAudit =
+      this._refreshAuditAfterSave
+      || (this._auditReport
+        && (this._auditReport.dashboard_url_path || this._auditDashboard || "lovelace") === dashboard);
     await this._call("save_binding", {
       binding_id: d.binding_id || undefined,
-      dashboard_url_path: d.dashboard_url_path,
+      dashboard_url_path: dashboard,
       include: d.include,
       exclude: d.exclude || [],
       locator,
       merge_mode: d.merge_mode || "ensure_user_branch",
       fingerprint: d.fingerprint || "",
       label: d.label || "",
+      breadcrumb: d.breadcrumb || "",
     });
+    this._pendingAuditRefresh = null;
     this._bindingDraft = null;
+    this._refreshAuditAfterSave = false;
+    this._resetNodeBrowser?.();
+    this._pickerStep = "closed";
     // Re-sync so Lovelace visibility reflects the edit immediately.
     await this._sync(false);
+    // After Convert (or any save on the audited dashboard), refresh audit rows.
+    if (refreshAudit) {
+      this._auditDashboard = dashboard;
+      await this._runVisibilityAudit();
+    }
   }
 
   async _deleteBinding(id) {
@@ -1654,8 +2141,23 @@ class VizGroupsPanel extends LitElement {
   _renderIconPicker() {
     const d = this._draft;
     if (!d) return nothing;
-    const filtered = this._filteredIcons();
+    const { icons: filtered, total, mode } = this._filteredIcons();
     const current = this._normalizeIcon(d.icon);
+    const catalogLabel = this._iconCatalogReady
+      ? (this._iconCatalogError
+        ? `Curated fallback (${this._iconCatalogCount} icons)`
+        : `Full HA MDI set (${this._iconCatalogCount.toLocaleString()} icons)`)
+      : "Loading HA icon catalog…";
+    let meta = catalogLabel;
+    if (mode === "suggest" && this._iconCatalogReady && !this._iconCatalogError) {
+      meta = `${catalogLabel}. Showing suggestions — type to search the full set (names + keywords).`;
+    } else if (mode === "search" && total > filtered.length) {
+      meta = `${catalogLabel}. Showing ${filtered.length} of ${total.toLocaleString()} matches — refine search for more.`;
+    } else if (mode === "search") {
+      meta = `${catalogLabel}. ${total.toLocaleString()} match${total === 1 ? "" : "es"}.`;
+    } else if (mode === "loading") {
+      meta = catalogLabel;
+    }
     return html`
       <div class="field">
         <label>Icon</label>
@@ -1668,26 +2170,33 @@ class VizGroupsPanel extends LitElement {
               this._draft = { ...d, icon: e.target.value };
               this._iconFilter = e.target.value;
               this._iconPickerOpen = true;
+              this._ensureIconCatalog();
             }}
-            @focus=${() => { this._iconPickerOpen = true; }}
+            @focus=${() => {
+              this._iconPickerOpen = true;
+              this._ensureIconCatalog();
+            }}
           />
         </div>
         <button class="btn btn-ghost btn-sm" style="margin-top:8px"
           type="button"
-          @click=${() => { this._iconPickerOpen = !this._iconPickerOpen; }}>
+          @click=${this._toggleIconPicker}>
           ${this._iconPickerOpen ? "Hide icon list" : "Browse icons"}
         </button>
         ${this._iconPickerOpen
           ? html`<div class="icon-picker">
               <div class="icon-picker-toolbar">
                 <input
-                  placeholder="Type to filter (e.g. school, shield, home)"
+                  placeholder="Search all HA icons (e.g. school, shield, user, door)"
                   .value=${this._iconFilter}
                   @input=${(e) => { this._iconFilter = e.target.value; }}
                 />
               </div>
+              <div class="icon-meta">${meta}</div>
               ${filtered.length === 0
-                ? html`<div class="icon-empty">No icons match. Keep typing a full <code>mdi:…</code> name above.</div>`
+                ? html`<div class="icon-empty">${mode === "loading"
+                  ? "Loading icon catalog…"
+                  : html`No icons match. Keep typing a full <code>mdi:…</code> name above.`}</div>`
                 : html`<div class="icon-grid">
                     ${filtered.map(
                       (icon) => html`
@@ -1807,7 +2316,9 @@ class VizGroupsPanel extends LitElement {
               .value=${this._userSearch}
               @input=${(e) => (this._userSearch = e.target.value)}
             />
-            <span class="hint" style="display:block;margin-top:8px">Click to add a user to the group. Paste selects IDs copied from Visibility audit.</span>
+            <span class="hint" style="display:block;margin-top:8px">${editing
+              ? "Click to add — membership saves immediately. Detail fields still use Save."
+              : "Click to add a user to the group. Paste selects IDs copied from Visibility audit. Save the group to keep members."}</span>
           </div>
           <div class="user-picker panel-col-body">
             ${this._users
@@ -1943,26 +2454,18 @@ class VizGroupsPanel extends LitElement {
 
   _renderPreviewCard(card) {
     const key = this._nodeKey(card);
-    const nested = Array.isArray(card.cards) ? card.cards : [];
-    return html`<div class="preview-card-wrap">
-      <button type="button"
-        class="preview-card ${key === this._selectedNodeKey ? "selected" : ""} ${key === this._hoverKey ? "hot" : ""}"
-        @mouseenter=${() => (this._hoverKey = key)}
-        @mouseleave=${() => (this._hoverKey = "")}
-        @click=${(e) => { e.stopPropagation(); this._selectNode(card); }}>
-        <ha-icon .icon=${card.icon || "mdi:card"}></ha-icon>
-        <div>
-          <strong>${card.label}</strong>
-          ${card.snippet ? html`<span class="snip">${card.snippet}</span>` : nothing}
-          <span class="meta">${card.type || "card"}${card.has_visibility ? " · visibility" : ""}</span>
-        </div>
-      </button>
-      ${nested.length
-        ? html`<div class="preview-cards nested" style="margin:6px 0 0 18px">
-            ${nested.map((child) => this._renderPreviewCard(child))}
-          </div>`
-        : nothing}
-    </div>`;
+    return html`<button type="button"
+      class="preview-card ${key === this._selectedNodeKey ? "selected" : ""} ${key === this._hoverKey ? "hot" : ""}"
+      @mouseenter=${() => (this._hoverKey = key)}
+      @mouseleave=${() => (this._hoverKey = "")}
+      @click=${(e) => { e.stopPropagation(); this._selectNode(card); }}>
+      <ha-icon .icon=${card.icon || "mdi:card"}></ha-icon>
+      <div>
+        <strong>${this._displayLabel(card.label)}</strong>
+        ${card.snippet ? html`<span class="snip">${card.snippet}</span>` : nothing}
+        <span class="meta">${card.type || "card"}${card.has_visibility ? " · visibility" : ""}</span>
+      </div>
+    </button>`;
   }
 
   _renderLocatorPicker() {
@@ -2074,7 +2577,7 @@ class VizGroupsPanel extends LitElement {
           <button class="btn btn-ghost" type="button"
             @click=${() => (this._pickerStep = "preview")}>Select a different element</button>
           <button class="btn btn-ghost" type="button"
-            @click=${() => { this._bindingDraft = null; this._resetNodeBrowser(); }}>Cancel</button>
+            @click=${() => { this._bindingDraft = null; this._refreshAuditAfterSave = false; this._resetNodeBrowser(); }}>Cancel</button>
         </div>
       </div>
     `;
@@ -2085,7 +2588,7 @@ class VizGroupsPanel extends LitElement {
     if (!d) return nothing;
     const editing = !!d.binding_id;
     const inGroupsStep = this._pickerStep === "groups";
-    return html`<div class="panel" style="padding:18px;margin-bottom:18px">
+    return html`<div class="panel binding-form" style="padding:18px;margin-bottom:18px">
       <h2 class="section-title">${editing ? "Edit visibility" : "Set visibility"}</h2>
       <div class="layout-2">
         <div>
@@ -2093,49 +2596,41 @@ class VizGroupsPanel extends LitElement {
             ? html`<div class="selected-node">
                 <div class="k">Selected target</div>
                 <strong>${this._selectedNodeLabel}</strong>
-                <div style="margin-top:6px;font-size:0.8rem;color:var(--muted)">${d.dashboard_url_path || ""}</div>
+                <div style="margin-top:6px;font-size:0.8rem;color:var(--muted)">${this._dashboardTitle(d.dashboard_url_path)}</div>
                 ${(d.include || []).length
                   ? html`<div class="chip-row" style="margin-top:10px">
-                      ${(d.include || []).map((id) => {
-                        const g = this._groups.find((x) => x.id === id);
-                        return html`<span class="pill">${g?.name || id}</span>`;
-                      })}
+                      ${(d.include || []).map((id) => html`<span class="pill">${this._groupName(id)}</span>`)}
                     </div>`
                   : nothing}
                 ${(d.exclude || []).length
                   ? html`<div class="chip-row" style="margin-top:6px">
-                      ${(d.exclude || []).map((id) => {
-                        const g = this._groups.find((x) => x.id === id);
-                        return html`<span class="pill warn">not ${g?.name || id}</span>`;
-                      })}
+                      ${(d.exclude || []).map((id) => html`<span class="pill warn">not ${this._groupName(id)}</span>`)}
                     </div>`
                   : nothing}
               </div>`
             : html`<div class="hint">Open the visual picker and choose the dashboard, and then dashboard element you want to manage visibility for.</div>`}
+          <div class="toolbar" style="margin-top:14px">
+            <button class="btn btn-primary btn-sm" type="button" ?disabled=${this._busy}
+              @click=${() => this._openDashboardPicker()}>
+              ${this._pickerStep === "closed" ? "Open visual picker" : "Show dashboards"}
+            </button>
+            ${this._pickerStep !== "closed"
+              ? html`<button class="btn btn-ghost btn-sm" type="button"
+                  @click=${() => (this._pickerStep = "closed")}>Hide picker</button>`
+              : nothing}
+            ${this._selectedNodeLabel && this._pickerStep !== "groups"
+              ? html`<button class="btn btn-ghost btn-sm" type="button"
+                  @click=${() => (this._pickerStep = "groups")}>Choose groups →</button>`
+              : nothing}
+          </div>
           ${!inGroupsStep
-            ? html`<div class="toolbar" style="margin-top:14px">
-                <button class="btn btn-ghost" @click=${() => { this._bindingDraft = null; this._resetNodeBrowser(); }}>Cancel</button>
+            ? html`<div class="toolbar" style="margin-top:10px">
+                <button class="btn btn-ghost" @click=${() => { this._bindingDraft = null; this._refreshAuditAfterSave = false; this._resetNodeBrowser(); }}>Cancel</button>
               </div>`
             : nothing}
         </div>
         <div>
-          <div class="field"><label>Visual picker</label>
-            <div class="toolbar" style="margin:0 0 8px">
-              <button class="btn btn-primary btn-sm" type="button" ?disabled=${this._busy}
-                @click=${() => this._openDashboardPicker()}>
-                ${this._pickerStep === "closed" ? "Open visual picker" : "Show dashboards"}
-              </button>
-              ${this._pickerStep !== "closed"
-                ? html`<button class="btn btn-ghost btn-sm" type="button"
-                    @click=${() => (this._pickerStep = "closed")}>Hide picker</button>`
-                : nothing}
-              ${this._selectedNodeLabel && this._pickerStep !== "groups"
-                ? html`<button class="btn btn-ghost btn-sm" type="button"
-                    @click=${() => (this._pickerStep = "groups")}>Choose groups →</button>`
-                : nothing}
-            </div>
-            ${this._renderLocatorPicker()}
-          </div>
+          ${this._renderLocatorPicker()}
         </div>
       </div>
     </div>`;
@@ -2177,7 +2672,7 @@ class VizGroupsPanel extends LitElement {
       <div class="panel" style="margin-top:18px;padding:18px">
         <h2 class="section-title">Visibility audit</h2>
         <p class="hint" style="margin:0 0 12px">
-          Pick a dashboard to list elements that already have people condition visibility. Source will be Viz Groups when visibility is managed by this integration, or manual dashboard config when visibility was set directly on the dashboard.
+          Pick a dashboard to list elements that already have people condition visibility. Source will be Viz Groups when visibility is managed by this integration, or Manual Dashboard Config when visibility was set directly on the dashboard.
         </p>
         <div class="toolbar" style="margin:0 0 12px">
           <div class="field" style="margin:0;min-width:220px;flex:1">
@@ -2197,7 +2692,7 @@ class VizGroupsPanel extends LitElement {
           ? html`<div class="chip-row" style="margin-bottom:12px">
               <span class="pill">${summary.with_user_visibility} with people visibility</span>
               <span class="pill ok">${summary.managed} Viz Groups</span>
-              <span class="pill warn">${summary.outside} manual dashboard config</span>
+              <span class="pill warn">${summary.outside} Manual Dashboard Config</span>
             </div>`
           : nothing}
         <div class="panel" style="border:0;border-top:1px solid var(--hg-divider);border-radius:0">
@@ -2234,9 +2729,9 @@ class VizGroupsPanel extends LitElement {
                             }}>
                             <span class="audit-chevron ${open ? "open" : ""}" aria-hidden="true"></span>
                             <span class="audit-toggle-label">
-                              <strong>${row.label || "Untitled"}</strong>
-                              ${row.breadcrumb && row.breadcrumb !== row.label
-                                ? html`<div style="font-size:0.8rem;color:var(--hg-text-secondary)">${row.breadcrumb}</div>`
+                              <strong>${this._displayLabel(row.label || "Untitled")}</strong>
+                              ${row.breadcrumb && this._displayLabel(row.breadcrumb) !== this._displayLabel(row.label || "")
+                                ? html`<div style="font-size:0.8rem;color:var(--hg-text-secondary)">${this._displayLabel(row.breadcrumb)}</div>`
                                 : nothing}
                             </span>
                           </button>
@@ -2251,10 +2746,17 @@ class VizGroupsPanel extends LitElement {
                                 data-tip=${`Managed by Viz Groups binding ${row.binding_id || ""}${row.binding_label ? ` (${row.binding_label})` : ""}${row.binding_stale ? " — stale" : ""}`}>
                                 Viz Groups
                               </span>`
-                            : html`<span class="pill warn has-tip"
-                                data-tip="People visibility exists in the dashboard YAML/UI, but no matching Viz Groups binding.">
-                                manual dashboard config
-                              </span>`}
+                            : html`<div class="audit-source">
+                                <span class="pill warn has-tip"
+                                  data-tip="People visibility exists in the dashboard YAML/UI, but no matching Viz Groups binding.">
+                                  Manual Dashboard Config
+                                </span>
+                                <button type="button" class="btn btn-primary btn-sm has-tip"
+                                  data-tip="Open Set visibility with this element already selected"
+                                  @click=${() => this._openConvertFromAudit(row)}>
+                                  Convert
+                                </button>
+                              </div>`}
                         </td>
                       </tr>
                       ${open
@@ -2320,11 +2822,23 @@ class VizGroupsPanel extends LitElement {
             ${this._bindings.length === 0
               ? html`<tr><td colspan="6">No visibility rules yet.</td></tr>`
               : this._bindings.map(
-                  (b) => html`<tr class="row-click" @click=${() => this._openEditBinding(b)}>
-                    <td>${b.label || b.id}</td>
-                    <td>${b.dashboard_url_path}</td>
-                    <td><div class="chip-row">${(b.expression?.include || []).map((id) => html`<span class="pill">${id}</span>`)}</div></td>
-                    <td><div class="chip-row">${(b.expression?.exclude || []).map((id) => html`<span class="pill warn">${id}</span>`)}</div></td>
+                  (b) => {
+                    const label = this._displayLabel(b.label || b.id);
+                    const crumb = this._displayLabel(
+                      b.breadcrumb ||
+                      this._locatorSummary(b.locator, b.fingerprint, "") ||
+                      ""
+                    );
+                    return html`<tr class="row-click" @click=${() => this._openEditBinding(b)}>
+                    <td>
+                      <strong>${label}</strong>
+                      ${crumb && crumb !== label
+                        ? html`<div class="muted" style="font-size:0.8rem;opacity:0.75;margin-top:2px">${crumb}</div>`
+                        : nothing}
+                    </td>
+                    <td>${this._dashboardTitle(b.dashboard_url_path)}</td>
+                    <td><div class="chip-row">${(b.expression?.include || []).map((id) => html`<span class="pill">${this._groupName(id)}</span>`)}</div></td>
+                    <td><div class="chip-row">${(b.expression?.exclude || []).map((id) => html`<span class="pill warn">${this._groupName(id)}</span>`)}</div></td>
                     <td>${b.stale ? html`<span class="pill warn">stale</span>` : html`<span class="pill ok">OK</span>`}</td>
                     <td>
                       <div class="row-actions" @click=${(e) => e.stopPropagation()}>
@@ -2332,8 +2846,8 @@ class VizGroupsPanel extends LitElement {
                         <button class="btn btn-danger btn-sm" @click=${() => this._deleteBinding(b.id)}>Remove</button>
                       </div>
                     </td>
-                  </tr>`
-                )}
+                  </tr>`;
+                  })}
           </tbody>
         </table>
       </div>
@@ -2382,4 +2896,9 @@ class VizGroupsPanel extends LitElement {
   }
 }
 
-customElements.define("vizgroups-panel", VizGroupsPanel);
+if (!customElements.get("vizgroups-panel")) {
+  customElements.define("vizgroups-panel", VizGroupsPanel);
+} else {
+  // Soft-reload / cache-bust: keep existing element class.
+}
+
