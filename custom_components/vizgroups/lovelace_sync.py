@@ -35,62 +35,6 @@ def _mode_str(mode: Any) -> str:
     return str(getattr(mode, "value", mode)).lower()
 
 
-def _is_overview_path(url_path: str | None) -> bool:
-    return url_path in (None, "", "lovelace", "default")
-
-
-def storage_key_candidates(
-    url_path: str | None,
-    *,
-    registry_items: list[dict[str, Any]] | None = None,
-) -> list[str]:
-    """Possible `.storage/` keys for a dashboard url_path.
-
-    Classic Overview uses ``lovelace``. When Overview is "taken control" / registered
-    as a named storage dashboard (common on newer HA), the file is ``lovelace.lovelace``
-    (registry id ``lovelace`` + ``url_path: lovelace``).
-    """
-    keys: list[str] = []
-
-    def _add(key: str) -> None:
-        if key and key not in keys:
-            keys.append(key)
-
-    if _is_overview_path(url_path):
-        _add("lovelace")
-        _add("lovelace.lovelace")
-        path_for_reg = "lovelace"
-    else:
-        path_for_reg = str(url_path)
-        underscored = path_for_reg.replace("-", "_")
-        _add(f"lovelace.{underscored}")
-        if underscored != path_for_reg:
-            _add(f"lovelace.{path_for_reg}")
-
-    for item in registry_items or []:
-        if not isinstance(item, dict):
-            continue
-        item_path = item.get("url_path")
-        item_id = item.get("id")
-        matches = False
-        if _is_overview_path(url_path):
-            matches = (
-                item_path in (None, "", "lovelace", "default")
-                or item_id in ("lovelace", "default")
-                or item_path == "lovelace"
-            )
-        else:
-            matches = item_path == path_for_reg or item_id == path_for_reg.replace(
-                "-", "_"
-            )
-        if not matches:
-            continue
-        if item_id:
-            _add(f"lovelace.{item_id}")
-
-    return keys
-
-
 class LovelaceSyncEngine:
     """Apply bindings to Lovelace configs (storage or yaml)."""
 
@@ -145,16 +89,7 @@ class LovelaceSyncEngine:
 
 
     def list_dashboards(self) -> list[dict[str, Any]]:
-        """Enumerate dashboards for the panel browser (url_path + title).
-
-        Always includes Overview (default Lovelace). Also merges user-created storage
-        dashboards from the Lovelace dashboards API and ``.storage/lovelace_dashboards``,
-        plus YAML dashboards from configuration / ``lovelace/*.yaml``.
-
-        Built-in *strategy* sidebars (Energy, Map, History, Media, Activity, To-do)
-        are not listed: Home Assistant does not expose editable storage/YAML configs
-        with people-visibility controls for those panels.
-        """
+        """Enumerate dashboards for the panel browser (url_path + title)."""
         items: list[dict[str, Any]] = [
             {"url_path": "lovelace", "title": "Overview", "mode": "storage"}
         ]
@@ -162,60 +97,49 @@ class LovelaceSyncEngine:
         try:
             dashboards = self._dashboards()
         except Exception:  # noqa: BLE001
-            dashboards = None
+            return items
 
-        def _upsert(
-            path: str | None,
-            *,
-            title: str | None = None,
-            mode: str | None = None,
-            dash: Any = None,
-        ) -> None:
+        def _add(path: str | None, dash: Any) -> None:
             url = "lovelace" if path in (None, "", "default") else str(path)
-            if dash is not None:
-                cfg = getattr(dash, "config", None) or {}
-                title = title or getattr(dash, "title", None) or (
-                    cfg.get("title") if isinstance(cfg, dict) else None
-                )
-                mode = mode or _mode_str(getattr(dash, "mode", None))
             if url in seen:
+                # Prefer richer title if we already have the stub Overview entry
                 if url == "lovelace" and items:
+                    cfg = getattr(dash, "config", None) or {}
+                    title = (
+                        getattr(dash, "title", None)
+                        or (cfg.get("title") if isinstance(cfg, dict) else None)
+                    )
                     if title:
                         items[0]["title"] = str(title)
+                    mode = _mode_str(getattr(dash, "mode", None))
                     if mode:
                         items[0]["mode"] = mode
                 return
             seen.add(url)
+            cfg = getattr(dash, "config", None) or {}
+            title = (
+                getattr(dash, "title", None)
+                or (cfg.get("title") if isinstance(cfg, dict) else None)
+                or url
+            )
             items.append(
                 {
                     "url_path": url,
-                    "title": str(title or url),
-                    "mode": mode or "storage",
+                    "title": str(title),
+                    "mode": _mode_str(getattr(dash, "mode", None)) or "storage",
                 }
             )
 
-        if dashboards is not None:
-            if hasattr(dashboards, "items"):
-                try:
-                    for key, dash in list(dashboards.items()):
-                        _upsert(key, dash=dash)
-                except Exception:  # noqa: BLE001
-                    pass
-            elif isinstance(dashboards, dict):
-                for key, dash in dashboards.items():
-                    _upsert(key, dash=dash)
-
-        # Registry: catches Overview registered as url_path=lovelace and other
-        # storage dashboards even when the in-memory API is incomplete.
-        try:
-            for item in self._lovelace_dashboard_registry_items():
-                _upsert(
-                    item.get("url_path") or item.get("id"),
-                    title=item.get("title"),
-                    mode=str(item.get("mode") or "storage"),
-                )
-        except Exception:  # noqa: BLE001
-            pass
+        # Mapping / collection styles across HA versions
+        if hasattr(dashboards, "items"):
+            try:
+                for key, dash in list(dashboards.items()):
+                    _add(key, dash)
+            except Exception:  # noqa: BLE001
+                pass
+        elif isinstance(dashboards, dict):
+            for key, dash in dashboards.items():
+                _add(key, dash)
 
         # YAML dashboards registered in configuration.yaml (in case not yet in API)
         try:
@@ -225,10 +149,15 @@ class LovelaceSyncEngine:
             registered = (conf.get("lovelace") or {}).get("dashboards") or {}
             if isinstance(registered, dict):
                 for key, cfg in registered.items():
-                    _upsert(
-                        str(key),
-                        title=str((cfg or {}).get("title") or key),
-                        mode=str((cfg or {}).get("mode") or "yaml"),
+                    if key in seen:
+                        continue
+                    seen.add(str(key))
+                    items.append(
+                        {
+                            "url_path": str(key),
+                            "title": str((cfg or {}).get("title") or key),
+                            "mode": str((cfg or {}).get("mode") or "yaml"),
+                        }
                     )
         except Exception:  # noqa: BLE001
             pass
@@ -244,12 +173,15 @@ class LovelaceSyncEngine:
                     url = stem.replace("_", "-")
                     if url in seen or stem in seen:
                         continue
-                    title = (
-                        "Viz Groups Lab"
-                        if url == "vizgroups-lab"
-                        else url.replace("-", " ").title()
+                    seen.add(url)
+                    title = "Viz Groups Lab" if url == "vizgroups-lab" else url.replace("-", " ").title()
+                    items.append(
+                        {
+                            "url_path": url,
+                            "title": title,
+                            "mode": "yaml",
+                        }
                     )
-                    _upsert(url, title=title, mode="yaml")
         except Exception:  # noqa: BLE001
             pass
 
@@ -294,24 +226,21 @@ class LovelaceSyncEngine:
     def _get_dashboard(self, url_path: str | None) -> Any:
         """Resolve a dashboard. Do not silently fall back when a specific path was requested."""
         dashboards = self._dashboards()
-        # Default overview — may live under None (classic) or "lovelace" (taken control).
-        if _is_overview_path(url_path):
-            found: list[tuple[Any, Any]] = []
-            for key in (None, "", "lovelace"):
+        # Default overview
+        if url_path in (None, "", "lovelace", "default"):
+            dashboard = None
+            try:
+                dashboard = dashboards.get(None)
+            except Exception:  # noqa: BLE001
+                dashboard = None
+            if dashboard is None:
                 try:
-                    dashboard = dashboards.get(key)
+                    dashboard = dashboards.get("")
                 except Exception:  # noqa: BLE001
                     dashboard = None
-                if dashboard is not None:
-                    found.append((key, dashboard))
-            if not found:
+            if dashboard is None:
                 raise HomeAssistantError("Default Lovelace dashboard not found")
-            # Prefer the named "lovelace" registration when present (storage key
-            # lovelace.lovelace); otherwise use the classic None/"" default.
-            for key, dashboard in found:
-                if key == "lovelace":
-                    return dashboard
-            return found[0][1]
+            return dashboard
 
         try:
             dashboard = dashboards.get(url_path)
@@ -369,6 +298,7 @@ class LovelaceSyncEngine:
                 keys.append(f"lovelace.{path}")
         # Prefer registry id from lovelace_dashboards when present
         try:
+            reg_path = self.hass.config.path(".storage/lovelace_dashboards")
             with open(reg_path, encoding="utf-8") as handle:
                 reg = json.load(handle)
             for item in ((reg.get("data") or {}).get("items") or []):
@@ -392,22 +322,8 @@ class LovelaceSyncEngine:
                 out.append(key)
         return out
 
-    def _storage_key_candidates(self, url_path: str | None) -> list[str]:
-        """Possible .storage keys for a dashboard url_path."""
-        return storage_key_candidates(
-            url_path,
-            registry_items=self._lovelace_dashboard_registry_items(),
-        )
-
-    def _load_storage_file_config(
-        self, url_path: str | None, *, allow_empty: bool = False
-    ) -> dict[str, Any] | None:
-        """Load Lovelace config from .storage JSON when async_load fails.
-
-        When ``allow_empty`` is False (default), skip configs whose ``views`` list
-        is empty so a stale classic ``lovelace`` stub does not hide
-        ``lovelace.lovelace`` (taken-control Overview).
-        """
+    def _load_storage_file_config(self, url_path: str | None) -> dict[str, Any] | None:
+        """Load Lovelace config from .storage JSON when async_load fails."""
         for key in self._storage_key_candidates(url_path):
             path = self.hass.config.path(f".storage/{key}")
             try:
@@ -422,23 +338,14 @@ class LovelaceSyncEngine:
             if not isinstance(data, dict):
                 continue
             config = data.get("config")
-            if not isinstance(config, dict) or not isinstance(config.get("views"), list):
-                continue
-            view_count = len(config.get("views") or [])
-            if view_count == 0 and not allow_empty:
-                _LOGGER.debug(
-                    "Skipping empty storage dashboard %s (.storage/%s)",
+            if isinstance(config, dict) and isinstance(config.get("views"), list):
+                _LOGGER.info(
+                    "Loaded storage dashboard %s from .storage/%s (%s views)",
                     url_path or "lovelace",
                     key,
+                    len(config.get("views") or []),
                 )
-                continue
-            _LOGGER.info(
-                "Loaded storage dashboard %s from .storage/%s (%s views)",
-                url_path or "lovelace",
-                key,
-                view_count,
-            )
-            return config
+                return config
         return None
 
     def _load_yaml_file_config(self, filename: str) -> dict[str, Any]:
@@ -503,17 +410,10 @@ class LovelaceSyncEngine:
                     len(config.get("views") or []) if isinstance(config, dict) else 0,
                 )
 
-        # Storage dashboards: async_load can fail or return empty views (esp. Overview
-        # when content lives in .storage/lovelace.lovelace) — read .storage JSON.
-        needs_storage = mode_val == "storage" and (
-            not isinstance(config, dict)
-            or not isinstance(config.get("views"), list)
-            or (
-                _is_overview_path(url_path)
-                and len(config.get("views") or []) == 0
-            )
-        )
-        if needs_storage:
+        # Storage dashboards: async_load can fail (esp. Overview) — read .storage JSON.
+        if mode_val == "storage" and (
+            not isinstance(config, dict) or not isinstance(config.get("views"), list)
+        ):
             stored = await self.hass.async_add_executor_job(
                 self._load_storage_file_config, url_path
             )
@@ -523,7 +423,7 @@ class LovelaceSyncEngine:
         if not isinstance(config, dict) or not isinstance(config.get("views"), list):
             # Overview often has no .storage/lovelace yet — return empty rather than hard-fail
             # so the panel can show a clear empty state instead of a WS error.
-            if _is_overview_path(url_path):
+            if url_path in (None, "", "lovelace", "default"):
                 _LOGGER.info(
                     "Overview has no loadable views; returning empty config for preview"
                 )
