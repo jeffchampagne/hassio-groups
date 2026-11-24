@@ -255,7 +255,7 @@ def list_visibility_nodes(config: dict[str, Any]) -> list[dict[str, Any]]:
                 "label": view_label,
                 "detail": _node_detail(view) or f"view #{v_idx}",
                 "breadcrumb": view_label,
-                "type": view.get("type") or "view",
+                "type": view.get("type") or ("sections" if isinstance(view.get("sections"), list) else "masonry" if isinstance(view.get("cards"), list) else "view"),
                 "locator": {
                     "kind": "view",
                     "view_index": v_idx,
@@ -401,6 +401,25 @@ def locators_match(left: Any, right: Any) -> bool:
     return True
 
 
+
+def _audit_element_type(kind: str | None, node: dict[str, Any], resolved: dict[str, Any]) -> str:
+    """Lovelace element type for audit rows (view mode / card type — not the title)."""
+    raw = resolved.get("type")
+    if isinstance(raw, str) and raw.strip():
+        return raw.strip()
+    # Views often omit type: infer layout mode from structure.
+    if (kind or "") == "view":
+        if isinstance(resolved.get("sections"), list):
+            return "sections"
+        if isinstance(resolved.get("cards"), list):
+            return "masonry"
+        return "view"
+    if (kind or "") == "section":
+        return "grid"
+    if isinstance(node.get("type"), str) and node["type"].strip():
+        return node["type"].strip()
+    return kind or "card"
+
 def audit_dashboard_user_visibility(
     config: dict[str, Any],
     *,
@@ -468,7 +487,7 @@ def audit_dashboard_user_visibility(
                     "kind": node.get("kind"),
                     "label": node.get("label"),
                     "breadcrumb": node.get("breadcrumb"),
-                    "type": node.get("type"),
+                    "type": _audit_element_type(node.get("kind"), node, resolved),
                     "locator": node.get("locator"),
                     "fingerprint": node.get("fingerprint") or "",
                     "lovelace_users": users,
@@ -487,7 +506,7 @@ def audit_dashboard_user_visibility(
                     "kind": node.get("kind"),
                     "label": node.get("label"),
                     "breadcrumb": node.get("breadcrumb"),
-                    "type": node.get("type"),
+                    "type": _audit_element_type(node.get("kind"), node, resolved),
                     "locator": node.get("locator"),
                     "fingerprint": node.get("fingerprint") or "",
                     "lovelace_users": users,

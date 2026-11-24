@@ -1801,8 +1801,8 @@ class HaGroupsPanel extends LitElement {
       <div class="panel" style="margin-top:18px;padding:18px">
         <h2 class="section-title">Visibility audit</h2>
         <p class="hint" style="margin:0 0 12px">
-          Pick a dashboard to list elements that already have people (<code>condition: user</code>) visibility,
-          and see which are managed by HA Groups versus outside/manual.
+          Pick a dashboard to list elements that already have people (<code>condition: user</code>) visibility.
+          Source is <strong>HA Groups</strong> when a binding matches, or <strong>manual dashboard config</strong> when visibility was set outside HA Groups.
         </p>
         <div class="toolbar" style="margin:0 0 12px">
           <div class="field" style="margin:0;min-width:220px;flex:1">
@@ -1822,7 +1822,7 @@ class HaGroupsPanel extends LitElement {
           ? html`<div class="chip-row" style="margin-bottom:12px">
               <span class="pill">${summary.with_user_visibility} with people visibility</span>
               <span class="pill ok">${summary.managed} HA Groups</span>
-              <span class="pill warn">${summary.outside} outside / manual</span>
+              <span class="pill warn">${summary.outside} manual dashboard config</span>
             </div>`
           : nothing}
         <div class="panel" style="border:0;border-top:1px solid var(--hg-divider);border-radius:0">
@@ -1830,8 +1830,8 @@ class HaGroupsPanel extends LitElement {
             <thead>
               <tr>
                 <th>Element</th>
-                <th>Kind</th>
-                <th>People in Lovelace</th>
+                <th>Type</th>
+                <th>Home Assistant Users</th>
                 <th>Source</th>
               </tr>
             </thead>
@@ -1847,17 +1847,20 @@ class HaGroupsPanel extends LitElement {
                           ? html`<div style="font-size:0.8rem;color:var(--hg-text-secondary)">${row.breadcrumb}</div>`
                           : nothing}
                       </td>
-                      <td>${row.kind || "—"}</td>
+                      <td><code>${row.type || row.kind || "—"}</code></td>
                       <td>${(row.lovelace_users || []).length
                         ? html`<span class="pill">${(row.lovelace_users || []).length}</span>`
                         : "—"}</td>
                       <td>
                         ${row.status === "managed"
                           ? html`<span class="pill ok has-tip"
-                              data-tip=${`Binding ${row.binding_id || ""}${row.binding_stale ? " (stale)" : ""}`}>
-                              HA Groups${row.binding_label ? ` · ${row.binding_label}` : ""}
+                              data-tip=${`Managed by HA Groups binding ${row.binding_id || ""}${row.binding_label ? ` (${row.binding_label})` : ""}${row.binding_stale ? " — stale" : ""}`}>
+                              HA Groups
                             </span>`
-                          : html`<span class="pill warn">Outside / manual</span>`}
+                          : html`<span class="pill warn has-tip"
+                              data-tip="People visibility exists in the dashboard YAML/UI, but no matching HA Groups binding.">
+                              manual dashboard config
+                            </span>`}
                       </td>
                     </tr>`)}
             </tbody>
