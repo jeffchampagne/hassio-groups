@@ -76,7 +76,6 @@ def _reload_ws_modules() -> None:
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     """Register panel + websocket early so the sidebar appears after setup."""
     hass.data.setdefault(DOMAIN, {})
-    _reload_ws_modules()
     from .panel import async_register_panel as _reg_panel
     from .panel import async_register_websocket as _reg_ws
     _reg_ws(hass)
@@ -86,26 +85,31 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Viz Groups from a config entry."""
-    store = GroupsStore(hass)
-    await store.async_load()
+    import logging
 
-    runtime = GroupsRuntime(hass, store, entry)
-    hass.data.setdefault(DOMAIN, {})
-    hass.data[DOMAIN][entry.entry_id] = runtime
+    _log = logging.getLogger(__name__)
+    try:
+        store = GroupsStore(hass)
+        await store.async_load()
 
-    _reload_ws_modules()
-    from .panel import async_register_panel as _reg_panel
-    from .panel import async_register_websocket as _reg_ws
-    _reg_ws(hass)
-    # Always invoke — re-registers when PANEL_MODULE_URL cache-busts.
-    await _reg_panel(hass)
+        runtime = GroupsRuntime(hass, store, entry)
+        hass.data.setdefault(DOMAIN, {})
+        hass.data[DOMAIN][entry.entry_id] = runtime
 
-    await runtime.async_prune_users()
-    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
-    runtime.register_services()
+        from .panel import async_register_panel as _reg_panel
+        from .panel import async_register_websocket as _reg_ws
+        _reg_ws(hass)
+        await _reg_panel(hass)
 
-    entry.async_on_unload(entry.add_update_listener(_async_reload_options))
-    return True
+        await runtime.async_prune_users()
+        await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+        runtime.register_services()
+
+        entry.async_on_unload(entry.add_update_listener(_async_reload_options))
+        return True
+    except Exception:
+        _log.exception("Viz Groups async_setup_entry failed")
+        raise
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
