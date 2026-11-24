@@ -1436,16 +1436,16 @@ class HaGroupsPanel extends LitElement {
             </div>
           </div>
         </details>
-        <div class="field" style="margin-top:14px">
-          <label>Label (optional)</label>
-          <input .value=${d.label || ""}
-            @input=${(e) => (this._bindingDraft = { ...d, label: e.target.value })}
-            placeholder="Friendly name for this binding" />
-        </div>
         <details class="advanced" ?open=${this._advancedLocatorOpen}
           @toggle=${(e) => (this._advancedLocatorOpen = e.target.open)}>
           <summary>Advanced</summary>
-          <div class="field" style="margin-top:12px"><label>Merge mode</label>
+          <div class="field" style="margin-top:12px">
+            <label>Label (optional)</label>
+            <input .value=${d.label || ""}
+              @input=${(e) => (this._bindingDraft = { ...d, label: e.target.value })}
+              placeholder="Friendly name for this binding" />
+          </div>
+          <div class="field"><label>Merge mode</label>
             <select .value=${d.merge_mode || "ensure_user_branch"}
               @change=${(e) => (this._bindingDraft = { ...d, merge_mode: e.target.value })}>
               <option value="ensure_user_branch">Update people rule only (keep other conditions)</option>
@@ -1488,7 +1488,7 @@ class HaGroupsPanel extends LitElement {
             ${editing ? "Save & sync" : "Save binding"}
           </button>
           <button class="btn btn-ghost" type="button"
-            @click=${() => (this._pickerStep = "preview")}>Keep picking</button>
+            @click=${() => (this._pickerStep = "preview")}>Select a different target</button>
           <button class="btn btn-ghost" type="button"
             @click=${() => { this._bindingDraft = null; this._resetNodeBrowser(); }}>Cancel</button>
         </div>
@@ -1505,30 +1505,11 @@ class HaGroupsPanel extends LitElement {
       <h2 class="section-title">${editing ? "Edit binding" : "New binding"}</h2>
       <div class="layout-2">
         <div>
-          ${editing
-            ? html`<div class="field"><label>Binding ID</label>
-                <input .value=${d.binding_id} disabled />
-              </div>`
-            : nothing}
-          <div class="field"><label>Dashboard</label>
-            ${this._dashboards.length
-              ? html`<select .value=${d.dashboard_url_path} @change=${this._onDashboardPathChange}>
-                  ${this._dashboards.map(
-                    (dash) => html`<option value=${dash.url_path}
-                      ?selected=${dash.url_path === d.dashboard_url_path}>
-                      ${dash.title || dash.url_path}${dash.mode ? ` (${dash.mode})` : ""}
-                    </option>`
-                  )}
-                </select>
-                <span class="hint">Or type a path below if missing from the list.</span>
-                <input style="margin-top:8px" .value=${d.dashboard_url_path}
-                  @input=${this._onDashboardPathChange} />`
-              : html`<input .value=${d.dashboard_url_path} @input=${this._onDashboardPathChange} />`}
-          </div>
           ${this._selectedNodeLabel
             ? html`<div class="selected-node">
                 <div class="k">Selected target</div>
                 <strong>${this._selectedNodeLabel}</strong>
+                <div style="margin-top:6px;font-size:0.8rem;color:var(--muted)">${d.dashboard_url_path || ""}</div>
                 ${(d.include || []).length
                   ? html`<div class="chip-row" style="margin-top:10px">
                       ${(d.include || []).map((id) => {
