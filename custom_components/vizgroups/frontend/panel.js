@@ -284,6 +284,7 @@ class VizGroupsPanel extends LitElement {
     _pasteOpen: { state: true },
     _pasteDraft: { state: true },
     _expandedNested: { state: true },
+    _overlapPrompt: { state: true },
   };
 
   static styles = css`
@@ -627,6 +628,34 @@ class VizGroupsPanel extends LitElement {
       box-sizing: border-box;
     }
     .paste-box .toolbar { margin: 10px 0 0; }
+    .overlap-modal-backdrop {
+      position: fixed; inset: 0; z-index: 1000;
+      background: color-mix(in srgb, var(--hg-text) 45%, transparent);
+      display: flex; align-items: center; justify-content: center;
+      padding: 24px; box-sizing: border-box;
+    }
+    .overlap-modal {
+      width: min(440px, 100%);
+      background: var(--hg-card); color: var(--hg-text);
+      border: 1px solid var(--hg-divider); border-radius: 14px;
+      box-shadow: 0 16px 48px color-mix(in srgb, var(--hg-text) 18%, transparent);
+      padding: 20px 22px;
+    }
+    .overlap-modal h3 {
+      margin: 0 0 10px; font-family: var(--hg-font-display);
+      font-size: 1.2rem; font-weight: 500;
+    }
+    .overlap-modal p {
+      margin: 0 0 10px; color: var(--hg-text-secondary); line-height: 1.45;
+      font-size: 0.92rem;
+    }
+    .overlap-modal ul {
+      margin: 0 0 16px; padding: 0 0 0 1.1em;
+      color: var(--hg-text); font-size: 0.92rem; line-height: 1.45;
+    }
+    .overlap-modal .toolbar {
+      display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end;
+    }
     .audit-users { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
     .audit-users li { display: flex; align-items: center; gap: 10px; }
     .audit-users .member-meta strong { font-weight: 600; }
@@ -970,6 +999,7 @@ class VizGroupsPanel extends LitElement {
     this._clipStatusTimer = null;
     this._pasteOpen = false;
     this._pasteDraft = "";
+    this._overlapPrompt = null;
     this._memberSaveSeq = 0;
     this._memberSavePromise = null;
   }
@@ -1360,6 +1390,7 @@ class VizGroupsPanel extends LitElement {
     this._pasteOpen = false;
     this._pasteDraft = "";
     this._expandedNested = {};
+    if (this._overlapPrompt) this._resolveNestOverlapChoice("cancel");
     this._draft = {
       name: "",
       group_id: "",
@@ -1381,6 +1412,7 @@ class VizGroupsPanel extends LitElement {
     this._pasteOpen = false;
     this._pasteDraft = "";
     this._expandedNested = {};
+    if (this._overlapPrompt) this._resolveNestOverlapChoice("cancel");
     this._draft = {
       name: group.name,
       group_id: group.id,
@@ -1424,39 +1456,141 @@ class VizGroupsPanel extends LitElement {
     void this._persistMembers({ successMsg: "Member added" });
   }
 
-  _addGroupMember(groupId) {
+  /**
+   * Normalize a user/group id for Set membership compares.
+   * PR #25 missed trim + fell back to [] when effective_user_ids was empty,
+   * so overlapping direct users never triggered the confirm.
+   */
+  _normId(id) {
+    return String(id || "").trim();
+  }
+
+  /**
+   * Effective HA user ids for a group: union of snapshot flatten and a local
+   * members-tree walk (cycle-safe). Local walk covers stale/empty
+   * ``effective_user_ids`` on the client snapshot.
+   */
+  _effectiveUserIdsForGroup(groupId, stack = new Set()) {
+    const gid = this._normId(groupId);
+    if (!gid || stack.has(gid)) return [];
+    const group = (this._groups || []).find((g) => this._normId(g.id) === gid);
+    if (!group) return [];
+
+    const fromServer = Array.isArray(group.effective_user_ids)
+      ? group.effective_user_ids.map((id) => this._normId(id)).filter(Boolean)
+      : [];
+
+    const next = new Set(stack);
+    next.add(gid);
+    const local = new Set();
+    for (const m of this._membersFromGroup(group)) {
+      if (m.type === "user") {
+        const uid = this._normId(m.id);
+        if (uid) local.add(uid);
+        continue;
+      }
+      for (const uid of this._effectiveUserIdsForGroup(m.id, next)) {
+        local.add(uid);
+      }
+    }
+    return [...new Set([...fromServer, ...local])];
+  }
+
+  _directUserOverlapWithNested(members, nestedGroupId) {
+    const nestedEffective = new Set(this._effectiveUserIdsForGroup(nestedGroupId));
+    if (!nestedEffective.size) return [];
+    return (members || [])
+      .filter((m) => m && m.type === "user")
+      .map((m) => this._normId(m.id))
+      .filter((id) => id && nestedEffective.has(id));
+  }
+
+  _askNestOverlapChoice({ nestedName, overlapIds }) {
+    const labels = overlapIds.map((id) => {
+      const u = (this._users || []).find((x) => this._normId(x.id) === id);
+      return u?.name || id;
+    });
+    return new Promise((resolve) => {
+      this._overlapPrompt = {
+        nestedName: nestedName || "nested group",
+        overlapIds,
+        labels,
+        resolve,
+      };
+    });
+  }
+
+  _resolveNestOverlapChoice(choice) {
+    const prompt = this._overlapPrompt;
+    this._overlapPrompt = null;
+    if (prompt && typeof prompt.resolve === "function") {
+      prompt.resolve(choice);
+    }
+  }
+
+  _renderOverlapPrompt() {
+    const prompt = this._overlapPrompt;
+    if (!prompt) return nothing;
+    return html`
+      <div class="overlap-modal-backdrop" role="presentation"
+        @click=${(e) => {
+          if (e.target === e.currentTarget) this._resolveNestOverlapChoice("cancel");
+        }}>
+        <div class="overlap-modal" role="dialog" aria-modal="true"
+          aria-labelledby="hg-overlap-title">
+          <h3 id="hg-overlap-title">Overlapping members</h3>
+          <p>
+            These users are already direct members and also belong to
+            “${prompt.nestedName}”. Remove them from this group so they only
+            inherit via the nested group?
+          </p>
+          <ul>
+            ${(prompt.labels || []).map((name) => html`<li>${name}</li>`)}
+          </ul>
+          <div class="toolbar">
+            <button type="button" class="btn btn-ghost"
+              @click=${() => this._resolveNestOverlapChoice("cancel")}>Cancel</button>
+            <button type="button" class="btn btn-ghost"
+              @click=${() => this._resolveNestOverlapChoice("no")}>No — keep both</button>
+            <button type="button" class="btn btn-primary"
+              @click=${() => this._resolveNestOverlapChoice("yes")}>Yes — remove overlaps</button>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  async _addGroupMember(groupId) {
     if (!this._draft || !groupId) return;
     // Never nest a group inside itself.
-    if (groupId === (this._selectedGroupId || this._draft.group_id)) return;
+    const selfId = this._selectedGroupId || this._draft.group_id;
+    if (this._normId(groupId) === this._normId(selfId)) return;
     const members = this._normalizeDraftMembers(this._draft.members || []);
-    if (members.some((m) => m.type === "group" && m.id === groupId)) return;
+    if (members.some((m) => m.type === "group" && this._normId(m.id) === this._normId(groupId))) {
+      return;
+    }
+    // Don't stack prompts if one is already open.
+    if (this._overlapPrompt) return;
 
-    const nested = (this._groups || []).find((g) => g.id === groupId);
-    const nestedEffective = new Set(
-      (nested?.effective_user_ids || []).map((id) => String(id))
+    const nested = (this._groups || []).find(
+      (g) => this._normId(g.id) === this._normId(groupId)
     );
-    const directUserIds = members
-      .filter((m) => m.type === "user")
-      .map((m) => m.id);
-    const overlap = directUserIds.filter((id) => nestedEffective.has(String(id)));
+    const overlap = this._directUserOverlapWithNested(members, groupId);
 
-    let next = [...members, { type: "group", id: groupId }];
+    let next = [...members, { type: "group", id: this._normId(groupId) }];
     if (overlap.length) {
-      const nestedName = nested?.name || groupId;
-      const labels = overlap.map((id) => {
-        const u = (this._users || []).find((x) => x.id === id);
-        return u?.name || id;
+      const choice = await this._askNestOverlapChoice({
+        nestedName: nested?.name || groupId,
+        overlapIds: overlap,
       });
-      const list = labels.map((n) => `• ${n}`).join("\n");
-      const remove = confirm(
-        `These users are already direct members and also belong to “${nestedName}”:\n${list}\n\n` +
-          `Remove them from this group so they only inherit via the nested group?\n\n` +
-          `OK = remove overlapping users\nCancel = keep them as direct members`
-      );
-      if (remove) {
-        const drop = new Set(overlap.map(String));
-        next = next.filter((m) => !(m.type === "user" && drop.has(String(m.id))));
+      if (choice === "cancel") return;
+      if (choice === "yes") {
+        const drop = new Set(overlap);
+        next = next.filter(
+          (m) => !(m.type === "user" && drop.has(this._normId(m.id)))
+        );
       }
+      // choice === "no" → keep overlapping direct users and still add the nest
     }
 
     this._draft = {
@@ -2217,7 +2351,10 @@ class VizGroupsPanel extends LitElement {
         <nav class="side">
           <div class="brand">Viz Groups</div>
           <button class="nav-btn ${this._view === "groups" || this._view === "editor" ? "active" : ""}"
-            @click=${() => { this._view = "groups"; this._draft = null; this._iconPickerOpen = false; }}>Groups</button>
+            @click=${() => {
+              if (this._overlapPrompt) this._resolveNestOverlapChoice("cancel");
+              this._view = "groups"; this._draft = null; this._iconPickerOpen = false;
+            }}>Groups</button>
           <button class="nav-btn ${this._view === "bindings" ? "active" : ""}"
             @click=${() => { this._view = "bindings"; }}>Manage visibility</button>
           <button class="nav-btn ${this._view === "automations" ? "active" : ""}"
@@ -2231,6 +2368,7 @@ class VizGroupsPanel extends LitElement {
           ${this._view === "automations" ? this._renderAutomations() : nothing}
         </main>
       </div>
+      ${this._renderOverlapPrompt()}
     `;
   }
 
