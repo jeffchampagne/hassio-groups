@@ -20,22 +20,37 @@ def fingerprint_node(node: dict[str, Any] | None) -> str:
     titleish = ""
     for key in ("primary", "label", "name", "title", "heading"):
         val = node.get(key)
-        if isinstance(val, str) and val.strip():
+        if isinstance(val, str) and val.strip() and not val.strip().startswith("[[["):
             titleish = val.strip()
             break
+    entity = node.get("entity")
+    entity_s = ""
+    if isinstance(entity, str):
+        entity_s = entity
+    elif isinstance(node.get("entities"), list) and node["entities"]:
+        first = node["entities"][0]
+        if isinstance(first, str):
+            entity_s = first
+        elif isinstance(first, dict):
+            entity_s = str(first.get("entity") or "")
+    # Conditional wrappers have no title — borrow from the inner card.
+    if (not titleish or not entity_s) and str(node.get("type") or "") == "conditional":
+        wrapped = node.get("card")
+        if isinstance(wrapped, dict):
+            if not titleish:
+                for key in ("primary", "label", "name", "title", "heading"):
+                    val = wrapped.get(key)
+                    if isinstance(val, str) and val.strip() and not val.strip().startswith("[[["):
+                        titleish = val.strip()
+                        break
+            if not entity_s and isinstance(wrapped.get("entity"), str):
+                entity_s = wrapped["entity"]
     parts = [
         str(node.get("type") or ""),
         titleish,
     ]
-    entity = node.get("entity")
-    if isinstance(entity, str):
-        parts.append(entity)
-    elif isinstance(node.get("entities"), list) and node["entities"]:
-        first = node["entities"][0]
-        if isinstance(first, str):
-            parts.append(first)
-        elif isinstance(first, dict):
-            parts.append(str(first.get("entity") or ""))
+    if entity_s:
+        parts.append(entity_s)
     cards = node.get("cards")
     if isinstance(cards, list):
         parts.append(f"cards:{len(cards)}")

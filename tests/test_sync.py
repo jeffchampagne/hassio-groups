@@ -12,6 +12,7 @@ from vizgroups.sync import (
     audit_dashboard_user_visibility,
     build_dashboard_preview_tree,
     fingerprint_node,
+    collect_visibility_user_ids,
     list_visibility_nodes,
     locators_match,
     make_user_condition,
@@ -527,3 +528,107 @@ def test_audit_nested_grid_conditional_user() -> None:
     assert row["label"] == "Closed"
     assert row["lovelace_users"] == ["owner"]
     assert row["locator"]["extra"]["nested_path"] == [1]
+
+
+def test_closed_convert_preserves_nested_path() -> None:
+    """Convert of nested Closed conditional must keep nested_path or audit stays outside."""
+    cfg = {
+        "views": [
+            {
+                "title": "Building",
+                "sections": [
+                    {
+                        "cards": [
+                            {"type": "heading", "heading": "Building Mode"},
+                            {
+                                "type": "grid",
+                                "cards": [
+                                    {"type": "custom:button-card", "name": "Open"},
+                                    {
+                                        "type": "conditional",
+                                        "conditions": [
+                                            {
+                                                "condition": "or",
+                                                "conditions": [
+                                                    {
+                                                        "condition": "state",
+                                                        "entity": "binary_sensor.x",
+                                                        "state": "off",
+                                                    },
+                                                    {"condition": "user", "users": ["owner"]},
+                                                ],
+                                            }
+                                        ],
+                                        "card": {
+                                            "type": "custom:button-card",
+                                            "name": "Closed",
+                                            "entity": "input_select.building_mode",
+                                        },
+                                    },
+                                ],
+                            },
+                        ]
+                    }
+                ],
+            }
+        ]
+    }
+    audit_loc = {
+        "kind": "card",
+        "view_index": 0,
+        "section_index": 0,
+        "card_index": 1,
+        "extra": {"nested_path": [1]},
+    }
+    # Bug: Convert/_normalizeLocator stripped extra → parent grid.
+    broken_loc = {
+        "kind": "card",
+        "view_index": 0,
+        "section_index": 0,
+        "card_index": 1,
+    }
+    assert not locators_match(broken_loc, audit_loc)
+    assert locators_match(audit_loc, audit_loc)
+
+    broken = resolve_locator(cfg, Locator.from_dict(broken_loc))
+    good = resolve_locator(cfg, Locator.from_dict(audit_loc))
+    assert broken is not None and broken.get("type") == "grid"
+    assert good is not None and good.get("type") == "conditional"
+    assert fingerprint_node(good) == "conditional|Closed|input_select.building_mode"
+
+    # Sync with correct locator rewrites conditions users.
+    new_cfg, status = apply_binding_to_config(
+        cfg, Locator.from_dict(audit_loc), ["a", "b"],
+        expected_fingerprint=fingerprint_node(good),
+    )
+    assert status == "ok"
+    node = resolve_locator(new_cfg, Locator.from_dict(audit_loc))
+    assert collect_visibility_user_ids(node["conditions"]) == ["a", "b"]
+    # State sibling preserved
+    assert node["conditions"][0]["condition"] == "or"
+
+    # Wrong locator + conditional fingerprint → stale (does not clobber grid).
+    _, status = apply_binding_to_config(
+        cfg, Locator.from_dict(broken_loc), ["a", "b"],
+        expected_fingerprint="conditional|Closed|input_select.building_mode",
+    )
+    assert status == "stale"
+
+    audit = audit_dashboard_user_visibility(
+        new_cfg,
+        dashboard_url_path="lovelace",
+        bindings=[
+            {
+                "id": "bind-closed",
+                "label": "Closed",
+                "dashboard_url_path": "lovelace",
+                "locator": audit_loc,
+                "fingerprint": fingerprint_node(good),
+                "stale": False,
+                "expression": {"include": ["force-closed"], "exclude": []},
+            }
+        ],
+    )
+    row = next(e for e in audit["elements"] if e["label"] == "Closed")
+    assert row["status"] == "managed"
+    assert row["binding_id"] == "bind-closed"

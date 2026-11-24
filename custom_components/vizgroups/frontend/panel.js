@@ -1551,15 +1551,26 @@ class VizGroupsPanel extends LitElement {
     if (loc.view_path) out.view_path = loc.view_path;
     if (loc.view_index != null && loc.view_index !== "") out.view_index = Number(loc.view_index);
     else if (!out.view_path) out.view_index = 0;
-    if (kind === "view") return out;
+    // Preserve nested expander/stack/conditional path from audit/picker.
+    const nested = (loc.extra && Array.isArray(loc.extra.nested_path))
+      ? loc.extra.nested_path
+      : (Array.isArray(loc.nested_path) ? loc.nested_path : null);
+    if (kind === "view") {
+      return out;
+    }
     if (loc.section_index != null && loc.section_index !== "") {
       out.section_index = Number(loc.section_index);
     }
-    if (kind === "section") return out;
+    if (kind === "section") {
+      return out;
+    }
     if (loc.card_index != null && loc.card_index !== "") {
       out.card_index = Number(loc.card_index);
     } else {
       out.card_index = 0;
+    }
+    if (nested && nested.length) {
+      out.extra = { nested_path: nested.map((step) => (step === "card" ? "card" : Number(step))) };
     }
     return out;
   }
