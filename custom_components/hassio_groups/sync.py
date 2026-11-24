@@ -198,11 +198,19 @@ def apply_binding_to_config(
 
 
 def _node_label(node: dict[str, Any], *, fallback: str) -> str:
-    """Human-readable label: title/name/entity/type."""
-    for key in ("title", "name"):
+    """Human-readable label: title/heading/name — never fall back to card type as the name."""
+    for key in ("title", "heading", "name"):
         val = node.get(key)
         if isinstance(val, str) and val.strip():
             return val.strip()
+    # Markdown cards often use content as the visible title.
+    if str(node.get("type") or "") == "markdown":
+        content = node.get("content")
+        if isinstance(content, str) and content.strip():
+            for line in content.splitlines():
+                line = line.strip().lstrip("#").strip()
+                if line:
+                    return line[:80]
     entity = node.get("entity")
     if isinstance(entity, str) and entity.strip():
         return entity.strip()
@@ -213,9 +221,7 @@ def _node_label(node: dict[str, Any], *, fallback: str) -> str:
             return first.strip()
         if isinstance(first, dict) and first.get("entity"):
             return str(first.get("entity"))
-    ntype = node.get("type")
-    if isinstance(ntype, str) and ntype.strip():
-        return ntype.strip()
+    # Do not use type as the display name (e.g. "heading") — keep type in its own field.
     return fallback
 
 
@@ -478,16 +484,33 @@ def audit_dashboard_user_visibility(
         if not visibility_has_user_condition(visibility):
             continue
         users = collect_visibility_user_ids(visibility)
+        elem_type = _audit_element_type(node.get("kind"), node, resolved)
+        # Prefer real title from resolved Lovelace node (heading/title/name).
+        label = _node_label(
+            resolved,
+            fallback=str(node.get("label") or node.get("kind") or "Untitled"),
+        )
+        # If label collapsed to the type string, treat as missing.
+        if label.strip().lower() == str(elem_type).strip().lower():
+            label = str(node.get("label") or node.get("kind") or "Untitled")
+            if label.strip().lower() == str(elem_type).strip().lower():
+                label = "Untitled"
         matches = [b for b in relevant if locators_match(b["locator"], node.get("locator"))]
         if matches:
             primary = matches[0]
+            # Binding friendly name wins when present and node label is weak.
+            binding_name = (primary.get("label") or "").strip()
+            if binding_name and label in ("Untitled", node.get("kind"), elem_type):
+                label = binding_name
+            elif binding_name and label.strip().lower() == "heading":
+                label = binding_name
             rows.append(
                 {
                     "status": "managed",
                     "kind": node.get("kind"),
-                    "label": node.get("label"),
+                    "label": label,
                     "breadcrumb": node.get("breadcrumb"),
-                    "type": _audit_element_type(node.get("kind"), node, resolved),
+                    "type": elem_type,
                     "locator": node.get("locator"),
                     "fingerprint": node.get("fingerprint") or "",
                     "lovelace_users": users,
@@ -504,9 +527,9 @@ def audit_dashboard_user_visibility(
                 {
                     "status": "outside",
                     "kind": node.get("kind"),
-                    "label": node.get("label"),
+                    "label": label,
                     "breadcrumb": node.get("breadcrumb"),
-                    "type": _audit_element_type(node.get("kind"), node, resolved),
+                    "type": elem_type,
                     "locator": node.get("locator"),
                     "fingerprint": node.get("fingerprint") or "",
                     "lovelace_users": users,
