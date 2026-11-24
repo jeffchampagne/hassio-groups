@@ -15,19 +15,42 @@ def fingerprint_node(node: dict[str, Any] | None) -> str:
     """Stable-ish fingerprint from type + title/entity for drift detection."""
     if not isinstance(node, dict):
         return ""
-    parts = [
-        str(node.get("type") or ""),
-        str(node.get("title") or node.get("name") or ""),
-    ]
+    # Include mushroom primary (and other title-ish fields) so fingerprints
+    # are not just "custom:mushroom-template-card|" with an empty title segment.
+    titleish = ""
+    for key in ("primary", "label", "name", "title", "heading"):
+        val = node.get(key)
+        if isinstance(val, str) and val.strip() and not val.strip().startswith("[[["):
+            titleish = val.strip()
+            break
     entity = node.get("entity")
+    entity_s = ""
     if isinstance(entity, str):
-        parts.append(entity)
+        entity_s = entity
     elif isinstance(node.get("entities"), list) and node["entities"]:
         first = node["entities"][0]
         if isinstance(first, str):
-            parts.append(first)
+            entity_s = first
         elif isinstance(first, dict):
-            parts.append(str(first.get("entity") or ""))
+            entity_s = str(first.get("entity") or "")
+    # Conditional wrappers have no title — borrow from the inner card.
+    if (not titleish or not entity_s) and str(node.get("type") or "") == "conditional":
+        wrapped = node.get("card")
+        if isinstance(wrapped, dict):
+            if not titleish:
+                for key in ("primary", "label", "name", "title", "heading"):
+                    val = wrapped.get(key)
+                    if isinstance(val, str) and val.strip() and not val.strip().startswith("[[["):
+                        titleish = val.strip()
+                        break
+            if not entity_s and isinstance(wrapped.get("entity"), str):
+                entity_s = wrapped["entity"]
+    parts = [
+        str(node.get("type") or ""),
+        titleish,
+    ]
+    if entity_s:
+        parts.append(entity_s)
     cards = node.get("cards")
     if isinstance(cards, list):
         parts.append(f"cards:{len(cards)}")
@@ -51,6 +74,21 @@ def _view_from_config(config: dict[str, Any], locator: Locator) -> dict[str, Any
         if 0 <= idx < len(views) and isinstance(views[idx], dict):
             return views[idx]
     return None
+
+
+
+def _locator_nested_path(locator: Any) -> list[Any]:
+    """Nested card path steps from locator.extra.nested_path (ints and/or ``card``)."""
+    extra = None
+    if hasattr(locator, "extra"):
+        extra = getattr(locator, "extra", None)
+    elif isinstance(locator, dict):
+        extra = locator.get("extra")
+        if not extra and isinstance(locator.get("nested_path"), list):
+            return list(locator["nested_path"])
+    if isinstance(extra, dict) and isinstance(extra.get("nested_path"), list):
+        return list(extra["nested_path"])
+    return []
 
 
 def resolve_locator(config: dict[str, Any], locator: Locator) -> dict[str, Any] | None:
@@ -92,16 +130,35 @@ def resolve_locator(config: dict[str, Any], locator: Locator) -> dict[str, Any] 
         if not isinstance(cards, list) or locator.card_index is None:
             return None
         idx = locator.card_index
-        if 0 <= idx < len(cards) and isinstance(cards[idx], dict):
-            return cards[idx]
-        return None
+        if not (0 <= idx < len(cards) and isinstance(cards[idx], dict)):
+            return None
+        node: dict[str, Any] | None = cards[idx]
+        nested = _locator_nested_path(locator)
+        for step in nested:
+            if node is None:
+                return None
+            if step == "card":
+                wrapped = node.get("card")
+                node = wrapped if isinstance(wrapped, dict) else None
+                continue
+            try:
+                child_idx = int(step)
+            except (TypeError, ValueError):
+                return None
+            child_cards = node.get("cards")
+            if not isinstance(child_cards, list):
+                return None
+            if not (0 <= child_idx < len(child_cards) and isinstance(child_cards[child_idx], dict)):
+                return None
+            node = child_cards[child_idx]
+        return node
 
     # kind == other: best-effort walk using extra path tokens later; for now view fallback
     return view
 
 
 def make_user_condition(users: list[str]) -> dict[str, Any]:
-    """Build a condition:user leaf. Empty users is fail-closed. Dedupes IDs."""
+    """Build a condition:user leaf. Empty users is fail-closed."""
     seen: set[str] = set()
     ordered: list[str] = []
     for uid in users:
@@ -230,6 +287,7 @@ def apply_binding_to_config(
         else "visibility"
     )
     before_gate = deepcopy(node.get(gate_key))
+    before_vis = deepcopy(node.get("visibility")) if is_conditional else None
     node[gate_key] = apply_visibility_users(
         node.get(gate_key) if isinstance(node.get(gate_key), list) else node.get(gate_key),
         users,
@@ -240,15 +298,106 @@ def apply_binding_to_config(
         stripped = _strip_user_visibility_from_conditional(node)
     if node[gate_key] == before_gate and not stripped:
         return working, "unchanged"
+    if (
+        node[gate_key] == before_gate
+        and stripped
+        and before_vis == node.get("visibility")
+    ):
+        return working, "unchanged"
     return working, "ok"
 
 
+def _human_label_value(val: Any) -> str | None:
+    """Return a stripped human-readable string, or None if missing/blank."""
+    if isinstance(val, str) and val.strip():
+        text = val.strip()
+        # button-card / mushroom JS templates are not human titles.
+        if text.startswith("[[["):
+            return None
+        return text
+    return None
+
+
+_TITLE_KEYS = ("primary", "secondary", "label", "name", "title", "heading")
+
+
+def _direct_title_label(node: dict[str, Any]) -> str | None:
+    """Title-ish fields on the node itself (no entity / nested fallbacks)."""
+    for key in _TITLE_KEYS:
+        text = _human_label_value(node.get(key))
+        if text is not None:
+            return text
+    return None
+
+
+def _nested_heading_label(node: dict[str, Any]) -> str | None:
+    """Infer a label from nested ``heading`` cards (sections / stacks).
+
+    Sections on Overview often omit ``title`` and instead lead with a
+    ``type: heading`` card (e.g. ``Common Area Lighting``). Only heading
+    cards count here — nested button ``name`` values (Open/Closed) must not
+    steal the label from a sibling section heading.
+    """
+    cards = node.get("cards")
+    if isinstance(cards, list):
+        for child in cards:
+            if not isinstance(child, dict):
+                continue
+            child_type = str(child.get("type") or "")
+            if child_type == "heading" or child_type.endswith(":heading"):
+                direct = _direct_title_label(child)
+                if direct:
+                    return direct
+            # One level deeper for nested stacks that wrap a heading.
+            if child_type in (
+                "grid",
+                "horizontal-stack",
+                "vertical-stack",
+                "stack",
+            ):
+                deeper = _nested_heading_label(child)
+                if deeper:
+                    return deeper
+
+    wrapped = node.get("card")
+    if isinstance(wrapped, dict):
+        wrapped_type = str(wrapped.get("type") or "")
+        if wrapped_type == "heading" or wrapped_type.endswith(":heading"):
+            direct = _direct_title_label(wrapped)
+            if direct:
+                return direct
+        nested = _nested_heading_label(wrapped)
+        if nested:
+            return nested
+    return None
+
+
+def _is_generic_locator_label(label: str) -> bool:
+    """True for fallbacks like ``Card 3`` / ``Section 0`` / ``Card``."""
+    text = (label or "").strip()
+    if not text:
+        return True
+    low = text.lower()
+    if low in {"card", "section", "view", "untitled"}:
+        return True
+    parts = low.split()
+    return len(parts) == 2 and parts[0] in {"card", "section", "view"} and parts[1].isdigit()
+
+
 def _node_label(node: dict[str, Any], *, fallback: str) -> str:
-    """Human-readable label: title/heading/name — never fall back to card type as the name."""
-    for key in ("title", "heading", "name"):
-        val = node.get(key)
-        if isinstance(val, str) and val.strip():
-            return val.strip()
+    """Human-readable label — prefer mushroom/HA text fields over card type.
+
+    Field order: primary, secondary, label, name, title, heading (mushroom
+    template cards expose primary/secondary; stock cards use title/heading/name).
+    Then nested heading/title children (sections / grids). Never prefer type
+    as the display name.
+    """
+    direct = _direct_title_label(node)
+    if direct is not None:
+        return direct
+    nested = _nested_heading_label(node)
+    if nested is not None:
+        return nested
     # Markdown cards often use content as the visible title.
     if str(node.get("type") or "") == "markdown":
         content = node.get("content")
@@ -296,12 +445,146 @@ def _node_detail(node: dict[str, Any]) -> str:
     return " · ".join(bits)
 
 
+
+def _card_locator(
+    *,
+    view_index: int,
+    view_path: Any,
+    section_index: int | None,
+    card_index: int,
+    nested_path: list[Any] | None = None,
+) -> dict[str, Any]:
+    loc: dict[str, Any] = {
+        "kind": "card",
+        "view_index": view_index,
+        "view_path": view_path,
+        "card_index": card_index,
+    }
+    if section_index is not None:
+        loc["section_index"] = section_index
+    if nested_path:
+        loc["extra"] = {"nested_path": list(nested_path)}
+    return loc
+
+
+def _iter_child_cards(node: dict[str, Any]):
+    """Yield (path_step, child) for expander/stack/grid/conditional children."""
+    cards = node.get("cards")
+    if isinstance(cards, list):
+        for idx, child in enumerate(cards):
+            if isinstance(child, dict):
+                yield idx, child
+    wrapped = node.get("card")
+    if isinstance(wrapped, dict):
+        yield "card", wrapped
+
+
+def _has_user_gate(node: dict[str, Any]) -> bool:
+    """True when the node has a visibility/conditions tree that may contain users."""
+    if isinstance(node.get("visibility"), list):
+        return True
+    return str(node.get("type") or "") == "conditional" and isinstance(
+        node.get("conditions"), list
+    )
+
+
+def _user_gate_tree(node: dict[str, Any]) -> Any:
+    """Return the condition tree that gates people visibility for this node."""
+    # Conditionals are gated by ``conditions``; prefer that even if a stale
+    # sibling ``visibility`` people block was invented by an older sync.
+    if str(node.get("type") or "") == "conditional":
+        conditions = node.get("conditions")
+        if isinstance(conditions, list) and (
+            visibility_has_user_condition(conditions) or conditions
+        ):
+            return conditions
+    visibility = node.get("visibility")
+    if visibility_has_user_condition(visibility):
+        return visibility
+    return visibility
+
+
+def _conditional_inner_label(node: dict[str, Any], *, fallback: str) -> str:
+    if str(node.get("type") or "") != "conditional":
+        return _node_label(node, fallback=fallback)
+    inner = node.get("card")
+    if isinstance(inner, dict):
+        return _node_label(inner, fallback=fallback)
+    return _node_label(node, fallback=fallback)
+
+
 def list_visibility_nodes(config: dict[str, Any]) -> list[dict[str, Any]]:
-    """Enumerate visibility-capable nodes with locator hints (for UI browser)."""
+    """Enumerate visibility-capable nodes with locator hints (for UI browser).
+
+    Recurses into expander / stack / grid / conditional ``cards`` (and singular
+    ``card`` wrappers) so nested people gates are discoverable.
+    """
     results: list[dict[str, Any]] = []
     views = config.get("views")
     if not isinstance(views, list):
         return results
+
+    def _emit_card(
+        card: dict[str, Any],
+        *,
+        view_index: int,
+        view_path: Any,
+        view_label: str,
+        section_index: int | None,
+        section_label: str | None,
+        card_index: int,
+        nested_path: list[Any],
+        inherited_heading: str | None,
+        breadcrumb_prefix: str,
+    ) -> None:
+        card_type = str(card.get("type") or "")
+        card_label = _conditional_inner_label(card, fallback=f"Card {card_index}")
+        if (
+            _is_generic_locator_label(card_label)
+            and inherited_heading
+            and card_type not in ("heading",)
+            and not card_type.endswith(":heading")
+            and not nested_path
+        ):
+            card_label = inherited_heading
+        crumb = f"{breadcrumb_prefix} › {card_label}"
+        results.append(
+            {
+                "kind": "card",
+                "label": card_label,
+                "detail": _node_detail(card) or f"card #{card_index}",
+                "breadcrumb": crumb,
+                "type": card.get("type") or "card",
+                "locator": _card_locator(
+                    view_index=view_index,
+                    view_path=view_path,
+                    section_index=section_index,
+                    card_index=card_index,
+                    nested_path=nested_path,
+                ),
+                "fingerprint": fingerprint_node(card),
+                "has_visibility": _has_user_gate(card),
+            }
+        )
+        for step, child in _iter_child_cards(card):
+            child_heading = inherited_heading
+            child_type = str(child.get("type") or "")
+            direct = _direct_title_label(child)
+            if child_type == "heading" or child_type.endswith(":heading"):
+                if direct:
+                    child_heading = direct
+            _emit_card(
+                child,
+                view_index=view_index,
+                view_path=view_path,
+                view_label=view_label,
+                section_index=section_index,
+                section_label=section_label,
+                card_index=card_index,
+                nested_path=[*nested_path, step],
+                inherited_heading=child_heading,
+                breadcrumb_prefix=crumb,
+            )
 
     for v_idx, view in enumerate(views):
         if not isinstance(view, dict):
@@ -314,7 +597,14 @@ def list_visibility_nodes(config: dict[str, Any]) -> list[dict[str, Any]]:
                 "label": view_label,
                 "detail": _node_detail(view) or f"view #{v_idx}",
                 "breadcrumb": view_label,
-                "type": view.get("type") or ("sections" if isinstance(view.get("sections"), list) else "masonry" if isinstance(view.get("cards"), list) else "view"),
+                "type": view.get("type")
+                or (
+                    "sections"
+                    if isinstance(view.get("sections"), list)
+                    else "masonry"
+                    if isinstance(view.get("cards"), list)
+                    else "view"
+                ),
                 "locator": {
                     "kind": "view",
                     "view_index": v_idx,
@@ -349,50 +639,49 @@ def list_visibility_nodes(config: dict[str, Any]) -> list[dict[str, Any]]:
                 )
                 cards = section.get("cards")
                 if isinstance(cards, list):
+                    section_heading: str | None = None
                     for c_idx, card in enumerate(cards):
                         if not isinstance(card, dict):
                             continue
-                        card_label = _node_label(card, fallback=f"Card {c_idx}")
-                        results.append(
-                            {
-                                "kind": "card",
-                                "label": card_label,
-                                "detail": _node_detail(card) or f"card #{c_idx}",
-                                "breadcrumb": f"{view_label} › {section_label} › {card_label}",
-                                "type": card.get("type") or "card",
-                                "locator": {
-                                    "kind": "card",
-                                    "view_index": v_idx,
-                                    "view_path": view_path,
-                                    "section_index": s_idx,
-                                    "card_index": c_idx,
-                                },
-                                "fingerprint": fingerprint_node(card),
-                                "has_visibility": _has_user_gate(card),
-                            }
+                        card_type = str(card.get("type") or "")
+                        direct = _direct_title_label(card)
+                        if card_type == "heading" or card_type.endswith(":heading"):
+                            if direct:
+                                section_heading = direct
+                        _emit_card(
+                            card,
+                            view_index=v_idx,
+                            view_path=view_path,
+                            view_label=view_label,
+                            section_index=s_idx,
+                            section_label=section_label,
+                            card_index=c_idx,
+                            nested_path=[],
+                            inherited_heading=section_heading,
+                            breadcrumb_prefix=f"{view_label} › {section_label}",
                         )
         cards = view.get("cards")
         if isinstance(cards, list):
+            view_heading: str | None = None
             for c_idx, card in enumerate(cards):
                 if not isinstance(card, dict):
                     continue
-                card_label = _node_label(card, fallback=f"Card {c_idx}")
-                results.append(
-                    {
-                        "kind": "card",
-                        "label": card_label,
-                        "detail": _node_detail(card) or f"card #{c_idx}",
-                        "breadcrumb": f"{view_label} › {card_label}",
-                        "type": card.get("type") or "card",
-                        "locator": {
-                            "kind": "card",
-                            "view_index": v_idx,
-                            "view_path": view_path,
-                            "card_index": c_idx,
-                        },
-                        "fingerprint": fingerprint_node(card),
-                        "has_visibility": _has_user_gate(card),
-                    }
+                card_type = str(card.get("type") or "")
+                direct = _direct_title_label(card)
+                if card_type == "heading" or card_type.endswith(":heading"):
+                    if direct:
+                        view_heading = direct
+                _emit_card(
+                    card,
+                    view_index=v_idx,
+                    view_path=view_path,
+                    view_label=view_label,
+                    section_index=None,
+                    section_label=None,
+                    card_index=c_idx,
+                    nested_path=[],
+                    inherited_heading=view_heading,
+                    breadcrumb_prefix=view_label,
                 )
     return results
 
@@ -466,9 +755,15 @@ def _as_locator_dict(locator: Any) -> dict[str, Any]:
 
 
 def locators_match(left: Any, right: Any) -> bool:
-    """Match binding locator to a scanned node locator (path preferred over index)."""
+    """Match binding locator to a scanned node locator (path preferred over index).
+
+    Only compare indices that apply to the locator kind. Section bindings must
+    not fail to match because a stale ``card_index: 0`` leaked from the picker
+    (audit section rows omit ``card_index``).
+    """
     a = _as_locator_dict(left)
     b = _as_locator_dict(right)
+    kind = a.get("kind") or b.get("kind") or "card"
     if (a.get("kind") or "card") != (b.get("kind") or "card"):
         return False
     path_a = a.get("view_path") or None
@@ -478,12 +773,33 @@ def locators_match(left: Any, right: Any) -> bool:
             return False
     elif a.get("view_index") != b.get("view_index"):
         return False
+    if kind == "view":
+        return True
     if a.get("section_index") != b.get("section_index"):
         return False
+    if kind == "section":
+        return True
     if a.get("card_index") != b.get("card_index"):
+        return False
+    if _locator_nested_path(a) != _locator_nested_path(b):
         return False
     return True
 
+
+def breadcrumb_for_locator(config: dict[str, Any], locator: Any) -> str:
+    """Resolve view › section › … breadcrumb for a locator against a dashboard config."""
+    for node in list_visibility_nodes(config):
+        if locators_match(locator, node.get("locator")):
+            return str(node.get("breadcrumb") or "")
+    return ""
+
+
+def breadcrumb_for_locator(config: dict[str, Any], locator: Any) -> str:
+    """Resolve view › section › … breadcrumb for a locator against a dashboard config."""
+    for node in list_visibility_nodes(config):
+        if locators_match(locator, node.get("locator")):
+            return str(node.get("breadcrumb") or "")
+    return ""
 
 
 def _audit_element_type(kind: str | None, node: dict[str, Any], resolved: dict[str, Any]) -> str:
@@ -558,6 +874,10 @@ def audit_dashboard_user_visibility(
             continue
         # Re-resolve to inspect gate contents (list_visibility_nodes is metadata-only).
         loc = Locator.from_dict(node.get("locator") or {})
+        # Preserve nested_path from locator dict into Locator.extra
+        raw_loc = node.get("locator") or {}
+        if isinstance(raw_loc.get("extra"), dict):
+            loc.extra = dict(raw_loc["extra"])
         resolved = resolve_locator(config, loc)
         if not isinstance(resolved, dict):
             continue
@@ -566,10 +886,10 @@ def audit_dashboard_user_visibility(
             continue
         users = collect_visibility_user_ids(visibility)
         elem_type = _audit_element_type(node.get("kind"), node, resolved)
-        # Prefer real title from resolved Lovelace node (heading/title/name).
+        # Prefer real title from resolved Lovelace node (mushroom primary, title, …).
         label = _node_label(
             resolved,
-            fallback=str(node.get("label") or node.get("kind") or "Untitled"),
+            fallback=str(node.get("kind") or "Untitled"),
         )
         # If label collapsed to the type string, treat as missing.
         if label.strip().lower() == str(elem_type).strip().lower():
@@ -640,7 +960,10 @@ def audit_dashboard_user_visibility(
 def _card_preview(card: dict[str, Any]) -> dict[str, Any]:
     """Compact fields for visual preview tiles."""
     ntype = str(card.get("type") or "card")
-    label = _node_label(card, fallback=ntype)
+    # Never use card type as the display name (mushroom → custom:mushroom-…).
+    label = _node_label(card, fallback="Card")
+    if label.strip().lower() == ntype.strip().lower():
+        label = "Card"
     snippet = ""
     if ntype == "heading":
         snippet = str(card.get("heading") or label)
@@ -653,6 +976,16 @@ def _card_preview(card: dict[str, Any]) -> dict[str, Any]:
             if line:
                 snippet = line[:120]
                 break
+    elif _human_label_value(card.get("primary")) or _human_label_value(card.get("secondary")):
+        # Mushroom template / chips: show secondary under primary when both exist.
+        primary = _human_label_value(card.get("primary"))
+        secondary = _human_label_value(card.get("secondary"))
+        if primary and secondary and label == primary:
+            snippet = secondary
+        elif secondary and label != secondary:
+            snippet = secondary
+        elif primary and label != primary:
+            snippet = primary
     elif isinstance(card.get("entity"), str):
         snippet = card["entity"]
     elif isinstance(card.get("entities"), list) and card["entities"]:
@@ -674,6 +1007,8 @@ def _card_preview(card: dict[str, Any]) -> dict[str, Any]:
             "vertical-stack": "mdi:view-sequential",
             "grid": "mdi:view-grid",
         }.get(ntype, "mdi:card")
+        if isinstance(ntype, str) and ntype.startswith("custom:mushroom"):
+            icon = "mdi:mushroom"
     return {
         "label": label,
         "snippet": snippet,
@@ -683,8 +1018,77 @@ def _card_preview(card: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+
+def _preview_card_node(
+    card: dict[str, Any],
+    *,
+    view_index: int,
+    view_path: Any,
+    section_index: int | None,
+    card_index: int,
+    nested_path: list[Any],
+    breadcrumb_prefix: str,
+    inherited_heading: str | None,
+) -> dict[str, Any]:
+    """One preview tile, including nested expander/stack/conditional children."""
+    card_type = str(card.get("type") or "")
+    preview = _card_preview(card)
+    # Prefer conditional inner label for display.
+    if card_type == "conditional":
+        preview = {**preview, "label": _conditional_inner_label(card, fallback=preview["label"])}
+    label = preview["label"]
+    if (
+        _is_generic_locator_label(str(label))
+        and inherited_heading
+        and card_type not in ("heading",)
+        and not card_type.endswith(":heading")
+        and not nested_path
+    ):
+        label = inherited_heading
+        preview = {**preview, "label": label}
+    crumb = f"{breadcrumb_prefix} › {label}"
+    node = {
+        "kind": "card",
+        **preview,
+        "breadcrumb": crumb,
+        "locator": _card_locator(
+            view_index=view_index,
+            view_path=view_path,
+            section_index=section_index,
+            card_index=card_index,
+            nested_path=nested_path,
+        ),
+        "fingerprint": fingerprint_node(card),
+        "has_visibility": _has_user_gate(card),
+        "cards": [],
+    }
+    child_heading = inherited_heading
+    for step, child in _iter_child_cards(card):
+        child_type = str(child.get("type") or "")
+        direct = _direct_title_label(child)
+        if child_type == "heading" or child_type.endswith(":heading"):
+            if direct:
+                child_heading = direct
+        node["cards"].append(
+            _preview_card_node(
+                child,
+                view_index=view_index,
+                view_path=view_path,
+                section_index=section_index,
+                card_index=card_index,
+                nested_path=[*nested_path, step],
+                breadcrumb_prefix=crumb,
+                inherited_heading=child_heading,
+            )
+        )
+    return node
+
+
 def build_dashboard_preview_tree(config: dict[str, Any]) -> list[dict[str, Any]]:
-    """Hierarchical view → section → card tree for the visual locator picker."""
+    """Hierarchical view → section → card tree for the visual locator picker.
+
+    Nested container cards (expander / stacks / grid / conditional) appear as children.
+    """
     tree: list[dict[str, Any]] = []
     views = config.get("views")
     if not isinstance(views, list):
@@ -739,48 +1143,51 @@ def build_dashboard_preview_tree(config: dict[str, Any]) -> list[dict[str, Any]]
                 }
                 cards = section.get("cards")
                 if isinstance(cards, list):
+                    section_heading: str | None = None
                     for c_idx, card in enumerate(cards):
                         if not isinstance(card, dict):
                             continue
-                        preview = _card_preview(card)
+                        card_type = str(card.get("type") or "")
+                        direct = _direct_title_label(card)
+                        if card_type == "heading" or card_type.endswith(":heading"):
+                            if direct:
+                                section_heading = direct
                         section_node["cards"].append(
-                            {
-                                "kind": "card",
-                                **preview,
-                                "breadcrumb": f"{view_label} › {section_label} › {preview['label']}",
-                                "locator": {
-                                    "kind": "card",
-                                    "view_index": v_idx,
-                                    "view_path": view_path,
-                                    "section_index": s_idx,
-                                    "card_index": c_idx,
-                                },
-                                "fingerprint": fingerprint_node(card),
-                                "has_visibility": _has_user_gate(card),
-                            }
+                            _preview_card_node(
+                                card,
+                                view_index=v_idx,
+                                view_path=view_path,
+                                section_index=s_idx,
+                                card_index=c_idx,
+                                nested_path=[],
+                                breadcrumb_prefix=f"{view_label} › {section_label}",
+                                inherited_heading=section_heading,
+                            )
                         )
                 view_node["sections"].append(section_node)
 
         cards = view.get("cards")
         if isinstance(cards, list):
+            view_heading: str | None = None
             for c_idx, card in enumerate(cards):
                 if not isinstance(card, dict):
                     continue
-                preview = _card_preview(card)
+                card_type = str(card.get("type") or "")
+                direct = _direct_title_label(card)
+                if card_type == "heading" or card_type.endswith(":heading"):
+                    if direct:
+                        view_heading = direct
                 view_node["cards"].append(
-                    {
-                        "kind": "card",
-                        **preview,
-                        "breadcrumb": f"{view_label} › {preview['label']}",
-                        "locator": {
-                            "kind": "card",
-                            "view_index": v_idx,
-                            "view_path": view_path,
-                            "card_index": c_idx,
-                        },
-                        "fingerprint": fingerprint_node(card),
-                        "has_visibility": _has_user_gate(card),
-                    }
+                    _preview_card_node(
+                        card,
+                        view_index=v_idx,
+                        view_path=view_path,
+                        section_index=None,
+                        card_index=c_idx,
+                        nested_path=[],
+                        breadcrumb_prefix=view_label,
+                        inherited_heading=view_heading,
+                    )
                 )
         tree.append(view_node)
     return tree
