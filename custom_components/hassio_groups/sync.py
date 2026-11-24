@@ -336,3 +336,153 @@ def list_visibility_nodes(config: dict[str, Any]) -> list[dict[str, Any]]:
                     }
                 )
     return results
+
+
+
+def _card_preview(card: dict[str, Any]) -> dict[str, Any]:
+    """Compact fields for visual preview tiles."""
+    ntype = str(card.get("type") or "card")
+    label = _node_label(card, fallback=ntype)
+    snippet = ""
+    if ntype == "heading":
+        snippet = str(card.get("heading") or label)
+        label = snippet
+    elif ntype == "markdown":
+        content = str(card.get("content") or "")
+        # first meaningful line
+        for line in content.splitlines():
+            line = line.strip().lstrip("#").strip()
+            if line:
+                snippet = line[:120]
+                break
+    elif isinstance(card.get("entity"), str):
+        snippet = card["entity"]
+    elif isinstance(card.get("entities"), list) and card["entities"]:
+        first = card["entities"][0]
+        snippet = first if isinstance(first, str) else str((first or {}).get("entity") or "")
+    icon = card.get("icon")
+    if not icon:
+        icon = {
+            "heading": "mdi:format-header-pound",
+            "markdown": "mdi:language-markdown",
+            "entities": "mdi:format-list-bulleted",
+            "entity": "mdi:eye",
+            "button": "mdi:gesture-tap-button",
+            "gauge": "mdi:gauge",
+            "thermostat": "mdi:thermostat",
+            "media-control": "mdi:play-circle",
+            "picture": "mdi:image",
+            "horizontal-stack": "mdi:view-column",
+            "vertical-stack": "mdi:view-sequential",
+            "grid": "mdi:view-grid",
+        }.get(ntype, "mdi:card")
+    return {
+        "label": label,
+        "snippet": snippet,
+        "type": ntype,
+        "icon": icon,
+        "detail": _node_detail(card),
+    }
+
+
+def build_dashboard_preview_tree(config: dict[str, Any]) -> list[dict[str, Any]]:
+    """Hierarchical view → section → card tree for the visual locator picker."""
+    tree: list[dict[str, Any]] = []
+    views = config.get("views")
+    if not isinstance(views, list):
+        return tree
+
+    for v_idx, view in enumerate(views):
+        if not isinstance(view, dict):
+            continue
+        view_path = view.get("path")
+        view_label = _node_label(view, fallback=str(view_path or f"View {v_idx}"))
+        view_node: dict[str, Any] = {
+            "kind": "view",
+            "label": view_label,
+            "detail": _node_detail(view) or f"view #{v_idx}",
+            "breadcrumb": view_label,
+            "type": view.get("type") or "sections",
+            "icon": view.get("icon") or "mdi:view-dashboard",
+            "path": view_path,
+            "locator": {
+                "kind": "view",
+                "view_index": v_idx,
+                "view_path": view_path,
+            },
+            "fingerprint": fingerprint_node(view),
+            "has_visibility": isinstance(view.get("visibility"), list),
+            "sections": [],
+            "cards": [],
+        }
+
+        sections = view.get("sections")
+        if isinstance(sections, list):
+            for s_idx, section in enumerate(sections):
+                if not isinstance(section, dict):
+                    continue
+                section_label = _node_label(section, fallback=f"Section {s_idx}")
+                section_node: dict[str, Any] = {
+                    "kind": "section",
+                    "label": section_label,
+                    "detail": _node_detail(section) or f"section #{s_idx}",
+                    "breadcrumb": f"{view_label} › {section_label}",
+                    "type": section.get("type") or "grid",
+                    "icon": "mdi:view-grid-plus",
+                    "locator": {
+                        "kind": "section",
+                        "view_index": v_idx,
+                        "view_path": view_path,
+                        "section_index": s_idx,
+                    },
+                    "fingerprint": fingerprint_node(section),
+                    "has_visibility": isinstance(section.get("visibility"), list),
+                    "cards": [],
+                }
+                cards = section.get("cards")
+                if isinstance(cards, list):
+                    for c_idx, card in enumerate(cards):
+                        if not isinstance(card, dict):
+                            continue
+                        preview = _card_preview(card)
+                        section_node["cards"].append(
+                            {
+                                "kind": "card",
+                                **preview,
+                                "breadcrumb": f"{view_label} › {section_label} › {preview['label']}",
+                                "locator": {
+                                    "kind": "card",
+                                    "view_index": v_idx,
+                                    "view_path": view_path,
+                                    "section_index": s_idx,
+                                    "card_index": c_idx,
+                                },
+                                "fingerprint": fingerprint_node(card),
+                                "has_visibility": isinstance(card.get("visibility"), list),
+                            }
+                        )
+                view_node["sections"].append(section_node)
+
+        cards = view.get("cards")
+        if isinstance(cards, list):
+            for c_idx, card in enumerate(cards):
+                if not isinstance(card, dict):
+                    continue
+                preview = _card_preview(card)
+                view_node["cards"].append(
+                    {
+                        "kind": "card",
+                        **preview,
+                        "breadcrumb": f"{view_label} › {preview['label']}",
+                        "locator": {
+                            "kind": "card",
+                            "view_index": v_idx,
+                            "view_path": view_path,
+                            "card_index": c_idx,
+                        },
+                        "fingerprint": fingerprint_node(card),
+                        "has_visibility": isinstance(card.get("visibility"), list),
+                    }
+                )
+        tree.append(view_node)
+    return tree

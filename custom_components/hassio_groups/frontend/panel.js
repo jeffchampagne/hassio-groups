@@ -3,7 +3,7 @@
  * Friendly names primary; user IDs as subtitle on detail rows only.
  * Visibility is UX, not ACL.
  *
- * UX: edit bindings + visual locator browser; auto-slug/editable group IDs; MDI icon picker.
+ * UX: edit bindings + visual dashboard preview picker; editable group IDs; MDI icon picker.
  */
 import {
   LitElement,
@@ -135,11 +135,13 @@ class HaGroupsPanel extends LitElement {
     _iconFilter: { state: true },
     _iconPickerOpen: { state: true },
     _nodes: { state: true },
+    _previewTree: { state: true },
     _nodesBusy: { state: true },
-    _nodeFilter: { state: true },
-    _nodeKindFilter: { state: true },
-    _nodeBrowserOpen: { state: true },
+    _pickerStep: { state: true },
+    _previewViewIndex: { state: true },
+    _hoverKey: { state: true },
     _selectedNodeLabel: { state: true },
+    _selectedNodeKey: { state: true },
     _advancedLocatorOpen: { state: true },
   };
 
@@ -341,33 +343,6 @@ class HaGroupsPanel extends LitElement {
       color: var(--muted); max-width: 100%;
     }
     .icon-empty { padding: 16px; color: var(--muted); font-size: 0.85rem; text-align: center; }
-    .node-browser {
-      margin-top: 10px; border: 1px solid var(--line); border-radius: 12px;
-      background: rgba(255,255,255,0.72); overflow: hidden;
-    }
-    .node-browser-toolbar {
-      display: flex; gap: 8px; flex-wrap: wrap; padding: 10px; border-bottom: 1px solid var(--line);
-      align-items: center;
-    }
-    .node-browser-toolbar input, .node-browser-toolbar select {
-      font: inherit; padding: 8px 10px; border-radius: 10px; border: 1px solid var(--line);
-      background: rgba(255,255,255,0.9); color: var(--ink);
-    }
-    .node-browser-toolbar input { flex: 1; min-width: 140px; }
-    .node-list { max-height: 320px; overflow: auto; }
-    .node-row {
-      display: grid; grid-template-columns: 64px 1fr; gap: 10px; width: 100%;
-      text-align: left; border: 0; border-bottom: 1px solid var(--line);
-      background: transparent; padding: 12px 14px; cursor: pointer; font: inherit; color: inherit;
-    }
-    .node-row:hover, .node-row.selected { background: rgba(31,107,79,0.08); }
-    .node-row:last-child { border-bottom: 0; }
-    .node-kind {
-      font-size: 0.68rem; letter-spacing: 0.06em; text-transform: uppercase;
-      color: var(--accent-deep); font-weight: 600; padding-top: 2px;
-    }
-    .node-main strong { display: block; font-weight: 600; }
-    .node-main span { display: block; font-size: 0.8rem; color: var(--muted); margin-top: 2px; }
     .selected-node {
       margin-top: 10px; padding: 12px 14px; border-radius: 12px; border: 1px solid rgba(31,107,79,0.28);
       background: rgba(31,107,79,0.08);
@@ -379,6 +354,104 @@ class HaGroupsPanel extends LitElement {
     }
     details.advanced > summary {
       cursor: pointer; font-size: 0.85rem; color: var(--ink-soft); font-weight: 600;
+    }
+    .dash-grid {
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+      gap: 10px; margin-top: 10px;
+    }
+    .dash-tile {
+      display: flex; flex-direction: column; gap: 8px; text-align: left;
+      padding: 14px; border-radius: 14px; border: 1px solid var(--line);
+      background: rgba(255,255,255,0.75); cursor: pointer; font: inherit; color: inherit;
+      min-height: 96px;
+    }
+    .dash-tile:hover, .dash-tile.selected {
+      border-color: rgba(31,107,79,0.5); background: rgba(31,107,79,0.1);
+      box-shadow: 0 0 0 3px var(--accent-glow);
+    }
+    .dash-tile strong { font-size: 0.98rem; }
+    .dash-tile span { font-size: 0.78rem; color: var(--muted); }
+    .preview-shell {
+      margin-top: 12px; border: 1px solid var(--line); border-radius: 16px;
+      background:
+        linear-gradient(180deg, rgba(255,255,255,0.82), rgba(245,249,246,0.9));
+      overflow: hidden;
+    }
+    .preview-toolbar {
+      display: flex; gap: 8px; flex-wrap: wrap; align-items: center;
+      padding: 12px 14px; border-bottom: 1px solid var(--line);
+      background: rgba(255,255,255,0.55);
+    }
+    .preview-toolbar .title { font-weight: 600; color: var(--accent-deep); }
+    .view-tabs { display: flex; gap: 6px; flex-wrap: wrap; padding: 10px 12px; border-bottom: 1px solid var(--line); }
+    .view-tab {
+      border: 1px solid var(--line); background: rgba(255,255,255,0.7); color: var(--ink-soft);
+      border-radius: 999px; padding: 7px 12px; font: inherit; cursor: pointer;
+      display: inline-flex; align-items: center; gap: 6px;
+    }
+    .view-tab:hover { border-color: rgba(31,107,79,0.4); }
+    .view-tab.active { background: var(--accent); color: #f5faf7; border-color: transparent; }
+    .view-tab.selected-target { box-shadow: 0 0 0 2px var(--accent-glow); }
+    .preview-canvas { padding: 14px; max-height: 520px; overflow: auto; }
+    .preview-view-frame {
+      border: 2px dashed transparent; border-radius: 16px; padding: 8px;
+      transition: border-color 0.15s ease, background 0.15s ease;
+    }
+    .preview-view-frame:hover, .preview-view-frame.hot {
+      border-color: rgba(31,107,79,0.45); background: rgba(31,107,79,0.04);
+    }
+    .preview-view-frame.selected {
+      border-style: solid; border-color: var(--accent); background: rgba(31,107,79,0.07);
+    }
+    .preview-view-hit {
+      display: flex; justify-content: space-between; align-items: center; gap: 8px;
+      width: 100%; border: 0; background: transparent; font: inherit; color: inherit;
+      cursor: pointer; padding: 4px 6px 10px; text-align: left;
+    }
+    .preview-view-hit .hint { font-size: 0.75rem; color: var(--muted); }
+    .section-grid {
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 12px;
+    }
+    .preview-section {
+      border: 1px solid var(--line); border-radius: 14px; padding: 10px;
+      background: rgba(255,255,255,0.65); cursor: pointer;
+      transition: border-color 0.15s ease, box-shadow 0.15s ease, transform 0.12s ease;
+    }
+    .preview-section:hover, .preview-section.hot {
+      border-color: rgba(31,107,79,0.45); box-shadow: 0 0 0 3px var(--accent-glow);
+      transform: translateY(-1px);
+    }
+    .preview-section.selected {
+      border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-glow);
+    }
+    .preview-section-head {
+      display: flex; justify-content: space-between; gap: 8px; align-items: center;
+      margin-bottom: 8px; font-size: 0.78rem; color: var(--muted); text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    .preview-cards { display: grid; gap: 8px; }
+    .preview-card {
+      display: grid; grid-template-columns: 28px 1fr; gap: 10px; align-items: start;
+      text-align: left; width: 100%; border: 1px solid var(--line); border-radius: 12px;
+      padding: 10px 12px; background: rgba(255,255,255,0.9); cursor: pointer; font: inherit; color: inherit;
+      transition: border-color 0.15s ease, box-shadow 0.15s ease, transform 0.12s ease;
+    }
+    .preview-card:hover, .preview-card.hot {
+      border-color: rgba(31,107,79,0.5); box-shadow: 0 0 0 3px var(--accent-glow);
+      transform: translateY(-1px);
+    }
+    .preview-card.selected {
+      border-color: var(--accent); background: rgba(31,107,79,0.1);
+      box-shadow: 0 0 0 3px var(--accent-glow);
+    }
+    .preview-card strong { display: block; font-size: 0.92rem; }
+    .preview-card .snip { display: block; margin-top: 3px; font-size: 0.78rem; color: var(--muted); line-height: 1.35; }
+    .preview-card .meta { display: block; margin-top: 4px; font-size: 0.7rem; color: var(--accent-deep); }
+    .preview-empty { padding: 28px; text-align: center; color: var(--muted); }
+    .vis-pill {
+      font-size: 0.65rem; padding: 2px 7px; border-radius: 999px;
+      background: rgba(154,91,18,0.12); color: var(--warn);
     }
   `;
 
@@ -396,11 +469,13 @@ class HaGroupsPanel extends LitElement {
     this._iconFilter = "";
     this._iconPickerOpen = false;
     this._nodes = [];
+    this._previewTree = [];
     this._nodesBusy = false;
-    this._nodeFilter = "";
-    this._nodeKindFilter = "all";
-    this._nodeBrowserOpen = false;
+    this._pickerStep = "closed"; // closed | dashboards | preview
+    this._previewViewIndex = 0;
+    this._hoverKey = "";
     this._selectedNodeLabel = "";
+    this._selectedNodeKey = "";
     this._advancedLocatorOpen = false;
   }
 
@@ -615,10 +690,12 @@ class HaGroupsPanel extends LitElement {
 
   _resetNodeBrowser() {
     this._nodes = [];
-    this._nodeFilter = "";
-    this._nodeKindFilter = "all";
-    this._nodeBrowserOpen = false;
+    this._previewTree = [];
+    this._pickerStep = "closed";
+    this._previewViewIndex = 0;
+    this._hoverKey = "";
     this._selectedNodeLabel = "";
+    this._selectedNodeKey = "";
     this._advancedLocatorOpen = false;
     this._nodesBusy = false;
   }
@@ -635,43 +712,62 @@ class HaGroupsPanel extends LitElement {
     return bits.join(" · ");
   }
 
-  async _loadDashboardNodes(forceOpen = true) {
-    const path = this._bindingDraft?.dashboard_url_path?.trim();
+  _nodeKey(node) {
+    if (!node?.locator) return "";
+    const l = node.locator;
+    return [l.kind, l.view_path || l.view_index, l.section_index, l.card_index, node.fingerprint || ""].join("|");
+  }
+
+  _openDashboardPicker() {
+    this._pickerStep = "dashboards";
+    this._previewTree = [];
+    this._nodes = [];
+    this._error = "";
+  }
+
+  async _pickDashboard(urlPath) {
+    if (!urlPath) return;
+    this._bindingDraft = { ...this._bindingDraft, dashboard_url_path: urlPath };
+    this._selectedNodeLabel = "";
+    this._selectedNodeKey = "";
+    await this._loadDashboardPreview(urlPath);
+  }
+
+  async _loadDashboardPreview(urlPath) {
+    const path = (urlPath || this._bindingDraft?.dashboard_url_path || "").trim();
     if (!path) {
-      this._error = "Set a dashboard path before browsing";
+      this._error = "Pick a dashboard first";
       return;
     }
     this._nodesBusy = true;
     this._error = "";
-    if (forceOpen) this._nodeBrowserOpen = true;
+    this._pickerStep = "preview";
     try {
       const result = await this.hass.connection.sendMessagePromise({
         type: `${DOMAIN}/dashboard_nodes`,
         dashboard_url_path: path,
       });
       this._nodes = result?.nodes || [];
+      this._previewTree = result?.tree || [];
+      this._previewViewIndex = 0;
     } catch (err) {
       this._nodes = [];
+      this._previewTree = [];
       this._error = err?.message || String(err);
     } finally {
       this._nodesBusy = false;
     }
   }
 
-  _filteredNodes() {
-    const q = String(this._nodeFilter || "").trim().toLowerCase();
-    const kind = this._nodeKindFilter || "all";
-    return (this._nodes || []).filter((n) => {
-      if (kind !== "all" && n.kind !== kind) return false;
-      if (!q) return true;
-      const hay = `${n.label || ""} ${n.detail || ""} ${n.breadcrumb || ""} ${n.type || ""} ${n.kind || ""}`.toLowerCase();
-      return hay.includes(q);
-    });
-  }
-
   _selectNode(node) {
     if (!node?.locator) return;
     const loc = { ...node.locator };
+    // Avoid undefined keys polluting locator
+    Object.keys(loc).forEach((k) => {
+      if (loc[k] === undefined || loc[k] === null || loc[k] === "") {
+        if (k !== "view_path") delete loc[k];
+      }
+    });
     this._bindingDraft = {
       ...this._bindingDraft,
       locator: loc,
@@ -679,14 +775,18 @@ class HaGroupsPanel extends LitElement {
       label: this._bindingDraft.label || node.label || "",
     };
     this._selectedNodeLabel = node.breadcrumb || node.label || this._locatorSummary(loc, node.fingerprint);
-    this._nodeBrowserOpen = false;
+    this._selectedNodeKey = this._nodeKey(node);
+    this._hoverKey = "";
   }
 
   _onDashboardPathChange(e) {
     const path = e.target.value;
     this._bindingDraft = { ...this._bindingDraft, dashboard_url_path: path };
+    this._previewTree = [];
     this._nodes = [];
     this._selectedNodeLabel = "";
+    this._selectedNodeKey = "";
+    if (this._pickerStep === "preview") this._pickerStep = "dashboards";
   }
 
   _openBindingCreate() {
@@ -728,7 +828,10 @@ class HaGroupsPanel extends LitElement {
       this._bindingDraft.fingerprint,
       binding.label || "",
     );
-    // Manual indices already filled — show advanced if no fingerprint/path cues
+    this._selectedNodeKey = this._nodeKey({
+      locator: this._bindingDraft.locator,
+      fingerprint: this._bindingDraft.fingerprint,
+    });
     this._advancedLocatorOpen = !binding.fingerprint;
     this._view = "bindings";
     this._error = "";
@@ -1001,42 +1104,129 @@ class HaGroupsPanel extends LitElement {
     `;
   }
 
-  _renderNodeBrowser() {
-    const nodes = this._filteredNodes();
-    const currentFp = this._bindingDraft?.fingerprint || "";
-    return html`<div class="node-browser">
-      <div class="node-browser-toolbar">
-        <input
-          placeholder="Filter by title, type, entity…"
-          .value=${this._nodeFilter}
-          @input=${(e) => (this._nodeFilter = e.target.value)}
-        />
-        <select .value=${this._nodeKindFilter}
-          @change=${(e) => (this._nodeKindFilter = e.target.value)}>
-          <option value="all">All</option>
-          <option value="view">Views</option>
-          <option value="section">Sections</option>
-          <option value="card">Cards</option>
-        </select>
+  _renderDashboardChooser() {
+    const current = this._bindingDraft?.dashboard_url_path;
+    const dashes = this._dashboards.length
+      ? this._dashboards
+      : [{ url_path: "lovelace", title: "Overview", mode: "storage" }];
+    return html`
+      <div class="dash-grid">
+        ${dashes.map(
+          (d) => html`<button type="button"
+            class="dash-tile ${d.url_path === current ? "selected" : ""}"
+            @click=${() => this._pickDashboard(d.url_path)}>
+            <ha-icon .icon=${"mdi:view-dashboard-variant"}></ha-icon>
+            <strong>${d.title || d.url_path}</strong>
+            <span>${d.url_path}${d.mode ? ` · ${d.mode}` : ""}</span>
+          </button>`
+        )}
       </div>
-      ${this._nodesBusy
-        ? html`<div class="icon-empty">Loading dashboard elements…</div>`
-        : nodes.length === 0
-          ? html`<div class="icon-empty">No elements match. Try another filter or dashboard.</div>`
-          : html`<div class="node-list">
-              ${nodes.map(
-                (n) => html`<button type="button"
-                  class="node-row ${n.fingerprint && n.fingerprint === currentFp ? "selected" : ""}"
-                  @click=${() => this._selectNode(n)}>
-                  <div class="node-kind">${n.kind}</div>
-                  <div class="node-main">
-                    <strong>${n.label}</strong>
-                    <span>${n.breadcrumb || n.detail || n.type || ""}</span>
-                  </div>
-                </button>`
-              )}
-            </div>`}
-    </div>`;
+      <span class="hint">Choosing a dashboard opens a visual preview — click a view, section, or card.</span>
+    `;
+  }
+
+  _renderVisualPreview() {
+    if (this._nodesBusy) {
+      return html`<div class="preview-empty">Loading dashboard layout…</div>`;
+    }
+    const tree = this._previewTree || [];
+    if (!tree.length) {
+      return html`<div class="preview-empty">No views found on this dashboard.</div>`;
+    }
+    const viewIdx = Math.min(this._previewViewIndex, tree.length - 1);
+    const view = tree[viewIdx];
+    const viewKey = this._nodeKey(view);
+    const selectedKey = this._selectedNodeKey;
+    const hoverKey = this._hoverKey;
+    return html`
+      <div class="preview-shell">
+        <div class="preview-toolbar">
+          <button class="btn btn-ghost btn-sm" type="button" @click=${() => (this._pickerStep = "dashboards")}>← Dashboards</button>
+          <span class="title">${this._bindingDraft?.dashboard_url_path}</span>
+          <span class="spacer"></span>
+          <button class="btn btn-ghost btn-sm" type="button" ?disabled=${this._nodesBusy}
+            @click=${() => this._loadDashboardPreview()}>Refresh</button>
+        </div>
+        <div class="view-tabs">
+          ${tree.map((v, idx) => {
+            const key = this._nodeKey(v);
+            return html`<button type="button"
+              class="view-tab ${idx === viewIdx ? "active" : ""} ${key === selectedKey ? "selected-target" : ""}"
+              @click=${() => { this._previewViewIndex = idx; }}
+              @dblclick=${() => this._selectNode(v)}
+              title="Single-click to show · double-click to bind this view">
+              <ha-icon .icon=${v.icon || "mdi:view-dashboard"}></ha-icon>
+              ${v.label}
+              ${v.has_visibility ? html`<span class="vis-pill">vis</span>` : nothing}
+            </button>`;
+          })}
+        </div>
+        <div class="preview-canvas">
+          <div class="preview-view-frame ${viewKey === selectedKey ? "selected" : ""} ${viewKey === hoverKey ? "hot" : ""}"
+            @mouseenter=${() => (this._hoverKey = viewKey)}
+            @mouseleave=${() => (this._hoverKey = "")}>
+            <button type="button" class="preview-view-hit" @click=${() => this._selectNode(view)}>
+              <div>
+                <strong>View: ${view.label}</strong>
+                <div class="hint">Click here to bind the whole view${view.path ? ` · path ${view.path}` : ""}</div>
+              </div>
+              ${view.has_visibility ? html`<span class="vis-pill">has visibility</span>` : nothing}
+            </button>
+            ${view.sections?.length
+              ? html`<div class="section-grid">
+                  ${view.sections.map((section) => {
+                    const sKey = this._nodeKey(section);
+                    return html`<div
+                      class="preview-section ${sKey === selectedKey ? "selected" : ""} ${sKey === hoverKey ? "hot" : ""}"
+                      @mouseenter=${() => (this._hoverKey = sKey)}
+                      @mouseleave=${() => (this._hoverKey = "")}
+                      @click=${() => this._selectNode(section)}
+                    >
+                      <div class="preview-section-head">
+                        <span>Section · ${section.label}</span>
+                        ${section.has_visibility ? html`<span class="vis-pill">vis</span>` : nothing}
+                      </div>
+                      <div class="preview-cards" @click=${(e) => e.stopPropagation()}>
+                        ${(section.cards || []).map((card) => this._renderPreviewCard(card))}
+                      </div>
+                    </div>`;
+                  })}
+                </div>`
+              : nothing}
+            ${view.cards?.length
+              ? html`<div class="preview-cards" style="margin-top:10px">
+                  ${view.cards.map((card) => this._renderPreviewCard(card))}
+                </div>`
+              : nothing}
+            ${!view.sections?.length && !view.cards?.length
+              ? html`<div class="preview-empty">This view has no sections/cards to preview.</div>`
+              : nothing}
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  _renderPreviewCard(card) {
+    const key = this._nodeKey(card);
+    return html`<button type="button"
+      class="preview-card ${key === this._selectedNodeKey ? "selected" : ""} ${key === this._hoverKey ? "hot" : ""}"
+      @mouseenter=${() => (this._hoverKey = key)}
+      @mouseleave=${() => (this._hoverKey = "")}
+      @click=${(e) => { e.stopPropagation(); this._selectNode(card); }}>
+      <ha-icon .icon=${card.icon || "mdi:card"}></ha-icon>
+      <div>
+        <strong>${card.label}</strong>
+        ${card.snippet ? html`<span class="snip">${card.snippet}</span>` : nothing}
+        <span class="meta">${card.type || "card"}${card.has_visibility ? " · visibility" : ""}</span>
+      </div>
+    </button>`;
+  }
+
+  _renderLocatorPicker() {
+    if (this._pickerStep === "dashboards") return this._renderDashboardChooser();
+    if (this._pickerStep === "preview") return this._renderVisualPreview();
+    return nothing;
   }
 
   _renderBindingForm() {
@@ -1102,21 +1292,21 @@ class HaGroupsPanel extends LitElement {
                   <div style="margin-top:6px;font-size:0.8rem;color:var(--muted)">
                     ${d.locator?.kind || "?"}
                     ${d.locator?.view_path ? html` · ${d.locator.view_path}` : nothing}
-                    ${d.fingerprint ? html` · fp set` : nothing}
+                    ${d.fingerprint ? html` · fingerprint set` : nothing}
                   </div>
                 </div>`
-              : html`<div class="hint" style="margin:0 0 8px">Pick a view, section, or card from the dashboard.</div>`}
+              : html`<div class="hint" style="margin:0 0 8px">Open the visual picker and click a view, section, or card.</div>`}
             <div class="toolbar" style="margin:8px 0 0">
-              <button class="btn btn-ghost btn-sm" type="button" ?disabled=${this._nodesBusy || this._busy}
-                @click=${() => this._loadDashboardNodes(true)}>
-                ${this._nodesBusy ? "Loading…" : this._nodeBrowserOpen ? "Refresh elements" : "Browse elements"}
+              <button class="btn btn-primary btn-sm" type="button" ?disabled=${this._busy}
+                @click=${() => this._openDashboardPicker()}>
+                ${this._pickerStep === "closed" ? "Open visual picker" : "Show dashboards"}
               </button>
-              ${this._nodeBrowserOpen
+              ${this._pickerStep !== "closed"
                 ? html`<button class="btn btn-ghost btn-sm" type="button"
-                    @click=${() => (this._nodeBrowserOpen = false)}>Hide</button>`
+                    @click=${() => (this._pickerStep = "closed")}>Hide picker</button>`
                 : nothing}
             </div>
-            ${this._nodeBrowserOpen ? this._renderNodeBrowser() : nothing}
+            ${this._renderLocatorPicker()}
           </div>
           <div class="field"><label>Merge mode</label>
             <select .value=${d.merge_mode || "ensure_user_branch"}
@@ -1166,7 +1356,7 @@ class HaGroupsPanel extends LitElement {
           </div>
         </div>
       </div>
-      <div class="callout">Browse picks the locator + fingerprint automatically. Saving re-syncs Lovelace visibility.</div>
+      <div class="callout">Visual picker mirrors the dashboard layout (not a live iframe). Click a tile to fill locator + fingerprint. Saving re-syncs Lovelace.</div>
     </div>`;
   }
 

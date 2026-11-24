@@ -23,7 +23,7 @@ from .const import (
     PANEL_PATH,
 )
 from .models import GroupExpression, Locator, new_binding, new_group, utcnow_iso
-from .sync import list_visibility_nodes
+from .sync import build_dashboard_preview_tree, list_visibility_nodes
 
 
 class _NoRuntime(RuntimeError):
@@ -381,4 +381,11 @@ async def ws_dashboard_nodes(
     except Exception as err:  # noqa: BLE001
         connection.send_error(msg["id"], "dashboard_error", str(err))
         return
-    connection.send_result(msg["id"], {"nodes": list_visibility_nodes(config)})
+    connection.send_result(
+        msg["id"],
+        {
+            "nodes": list_visibility_nodes(config),
+            "tree": build_dashboard_preview_tree(config),
+            "dashboard_url_path": path,
+        },
+    )
