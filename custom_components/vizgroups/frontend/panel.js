@@ -464,6 +464,7 @@ class VizGroupsPanel extends LitElement {
     .audit-users li { display: flex; align-items: center; gap: 10px; }
     .audit-users .member-meta strong { font-weight: 600; }
     .audit-users .member-meta span { font-size: 0.8rem; color: var(--hg-text-secondary); word-break: break-all; }
+    .audit-source { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
     .sensor-attrs { margin: 8px 0 0; padding: 0; list-style: none; display: grid; gap: 4px; }
     .sensor-attrs li {
       display: grid; grid-template-columns: 8.5rem 1fr; gap: 10px;
@@ -1452,6 +1453,65 @@ class VizGroupsPanel extends LitElement {
     this._view = "bindings";
   }
 
+  /** Open Set visibility with audit row target preselected (manual → Viz Groups). */
+  _openConvertFromAudit(row) {
+    if (!row || row.status === "managed") return;
+    const loc = row.locator || {};
+    const dashboard =
+      this._auditDashboard
+      || this._auditReport?.dashboard_url_path
+      || this._dashboards[0]?.url_path
+      || "lovelace";
+    this._bindingDraft = {
+      binding_id: "",
+      dashboard_url_path: dashboard,
+      include: [],
+      exclude: [],
+      label: row.label || "",
+      locator: {
+        kind: loc.kind || "card",
+        view_path: loc.view_path ?? "",
+        view_index: loc.view_index ?? 0,
+        section_index: loc.section_index ?? 0,
+        card_index: loc.card_index ?? 0,
+      },
+      merge_mode: "ensure_user_branch",
+      fingerprint: row.fingerprint || "",
+    };
+    this._resetNodeBrowser();
+    const title = row.label || this._locatorSummary(
+      this._bindingDraft.locator,
+      this._bindingDraft.fingerprint,
+      "",
+    );
+    this._selectedNodeLabel = title;
+    const bits = [];
+    if (row.breadcrumb && row.breadcrumb !== title) bits.push(row.breadcrumb);
+    else {
+      const summary = this._locatorSummary(
+        this._bindingDraft.locator,
+        this._bindingDraft.fingerprint,
+        "",
+      );
+      if (summary && summary !== title) bits.push(summary);
+    }
+    if (row.type || loc.kind) bits.push(row.type || loc.kind);
+    this._selectedNodeSubtitle = bits.join(" · ");
+    this._selectedNodeKey = this._nodeKey({
+      locator: this._bindingDraft.locator,
+      fingerprint: this._bindingDraft.fingerprint,
+    });
+    this._advancedLocatorOpen = false;
+    this._excludeOpen = false;
+    this._pickerStep = "groups";
+    this._view = "bindings";
+    this._error = "";
+    this.updateComplete.then(() => {
+      const el = this.renderRoot?.querySelector?.(".binding-form");
+      el?.scrollIntoView?.({ behavior: "smooth", block: "start" });
+    });
+  }
+
   _openEditBinding(binding) {
     const loc = binding.locator || {};
     this._bindingDraft = {
@@ -2034,7 +2094,7 @@ class VizGroupsPanel extends LitElement {
     if (!d) return nothing;
     const editing = !!d.binding_id;
     const inGroupsStep = this._pickerStep === "groups";
-    return html`<div class="panel" style="padding:18px;margin-bottom:18px">
+    return html`<div class="panel binding-form" style="padding:18px;margin-bottom:18px">
       <h2 class="section-title">${editing ? "Edit visibility" : "Set visibility"}</h2>
       <div class="layout-2">
         <div>
@@ -2146,7 +2206,7 @@ class VizGroupsPanel extends LitElement {
           ? html`<div class="chip-row" style="margin-bottom:12px">
               <span class="pill">${summary.with_user_visibility} with people visibility</span>
               <span class="pill ok">${summary.managed} Viz Groups</span>
-              <span class="pill warn">${summary.outside} manual dashboard config</span>
+              <span class="pill warn">${summary.outside} Manual Dashboard Config</span>
             </div>`
           : nothing}
         <div class="panel" style="border:0;border-top:1px solid var(--hg-divider);border-radius:0">
@@ -2200,10 +2260,17 @@ class VizGroupsPanel extends LitElement {
                                 data-tip=${`Managed by Viz Groups binding ${row.binding_id || ""}${row.binding_label ? ` (${row.binding_label})` : ""}${row.binding_stale ? " — stale" : ""}`}>
                                 Viz Groups
                               </span>`
-                            : html`<span class="pill warn has-tip"
-                                data-tip="People visibility exists in the dashboard YAML/UI, but no matching Viz Groups binding.">
-                                manual dashboard config
-                              </span>`}
+                            : html`<div class="audit-source">
+                                <span class="pill warn has-tip"
+                                  data-tip="People visibility exists in the dashboard YAML/UI, but no matching Viz Groups binding.">
+                                  Manual Dashboard Config
+                                </span>
+                                <button type="button" class="btn btn-primary btn-sm has-tip"
+                                  data-tip="Open Set visibility with this element already selected"
+                                  @click=${() => this._openConvertFromAudit(row)}>
+                                  Convert
+                                </button>
+                              </div>`}
                         </td>
                       </tr>
                       ${open
