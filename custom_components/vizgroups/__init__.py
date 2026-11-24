@@ -47,15 +47,19 @@ CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 def _reload_ws_modules() -> None:
     """Reload integration modules from disk without a Core restart.
 
-    Order matters: models → sync → lovelace_sync → panel. Also refresh
-    ``LovelaceSyncEngine`` / ``GroupsStore`` symbols imported into this module
-    so config-entry reload picks up breadcrumb backfill and related fixes.
+    Order matters: membership/schemas before models/store/panel so nested-member
+    symbols exist when panel re-imports. Also refresh ``LovelaceSyncEngine`` /
+    ``GroupsStore`` symbols imported into this module.
     """
     pkg = __package__ or "custom_components.vizgroups"
     for mod_name in (
+        f"{pkg}.const",
+        f"{pkg}.membership",
+        f"{pkg}.schemas",
         f"{pkg}.models",
         f"{pkg}.sync",
         f"{pkg}.lovelace_sync",
+        f"{pkg}.store",
         f"{pkg}.panel",
     ):
         mod = sys.modules.get(mod_name)
@@ -71,11 +75,10 @@ def _reload_ws_modules() -> None:
         this.GroupsStore = st.GroupsStore
 
 
-
-
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     """Register panel + websocket early so the sidebar appears after setup."""
     hass.data.setdefault(DOMAIN, {})
+    _reload_ws_modules()
     from .panel import async_register_panel as _reg_panel
     from .panel import async_register_websocket as _reg_ws
     _reg_ws(hass)
@@ -96,6 +99,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hass.data.setdefault(DOMAIN, {})
         hass.data[DOMAIN][entry.entry_id] = runtime
 
+        # Soft-reload Python from disk so WS schemas (e.g. typed ``members``)
+        # pick up without a Core restart.
+        _reload_ws_modules()
         from .panel import async_register_panel as _reg_panel
         from .panel import async_register_websocket as _reg_ws
         _reg_ws(hass)
@@ -463,6 +469,9 @@ class GroupsRuntime:
                 ATTR_MEMBERS: list(effective),
             }
 
+        # Late-import so config-entry soft-reload picks up typed members schema.
+        from .schemas import MEMBER_ITEM_SCHEMA
+
         schemas = {
             "create_group": vol.Schema(
                 {
@@ -476,7 +485,9 @@ class GroupsRuntime:
                     vol.Optional("member_group_ids", default=[]): vol.All(
                         cv.ensure_list, [cv.string]
                     ),
-                    vol.Optional("members"): vol.All(cv.ensure_list, [dict]),
+                    vol.Optional("members"): vol.All(
+                        cv.ensure_list, [MEMBER_ITEM_SCHEMA]
+                    ),
                 }
             ),
             "update_group": vol.Schema(
@@ -491,7 +502,9 @@ class GroupsRuntime:
                     vol.Optional("member_group_ids"): vol.All(
                         cv.ensure_list, [cv.string]
                     ),
-                    vol.Optional("members"): vol.All(cv.ensure_list, [dict]),
+                    vol.Optional("members"): vol.All(
+                        cv.ensure_list, [MEMBER_ITEM_SCHEMA]
+                    ),
                 }
             ),
             "delete_group": vol.Schema({vol.Required("group_id"): cv.string}),
