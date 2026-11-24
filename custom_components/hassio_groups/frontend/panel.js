@@ -2,6 +2,8 @@
  * HA Groups admin panel (Lit).
  * Friendly names primary; user IDs as subtitle on detail rows only.
  * Visibility is UX, not ACL.
+ *
+ * UX: edit existing bindings + re-sync; auto-slug group IDs; MDI icon picker.
  */
 import {
   LitElement,
@@ -11,6 +13,112 @@ import {
 } from "https://unpkg.com/lit@3.2.1/index.js?module";
 
 const DOMAIN = "hassio_groups";
+
+/** Curated MDI set for groups / people / home — type-to-filter; free-text still allowed. */
+const MDI_ICON_CHOICES = [
+  "mdi:account",
+  "mdi:account-circle",
+  "mdi:account-group",
+  "mdi:account-multiple",
+  "mdi:account-school",
+  "mdi:account-tie",
+  "mdi:account-hard-hat",
+  "mdi:account-cog",
+  "mdi:account-key",
+  "mdi:account-lock",
+  "mdi:account-star",
+  "mdi:account-supervisor",
+  "mdi:badge-account",
+  "mdi:briefcase-account",
+  "mdi:card-account-details",
+  "mdi:human-male-female",
+  "mdi:account-child",
+  "mdi:baby-face",
+  "mdi:face-man",
+  "mdi:face-woman",
+  "mdi:home",
+  "mdi:home-account",
+  "mdi:home-group",
+  "mdi:home-variant",
+  "mdi:office-building",
+  "mdi:school",
+  "mdi:teacher",
+  "mdi:bookshelf",
+  "mdi:hammer-wrench",
+  "mdi:toolbox",
+  "mdi:wrench",
+  "mdi:shield-account",
+  "mdi:shield-check",
+  "mdi:shield-lock",
+  "mdi:lock",
+  "mdi:key",
+  "mdi:key-variant",
+  "mdi:eye",
+  "mdi:eye-off",
+  "mdi:eye-check",
+  "mdi:view-dashboard",
+  "mdi:view-grid",
+  "mdi:monitor-dashboard",
+  "mdi:tablet-dashboard",
+  "mdi:door",
+  "mdi:door-open",
+  "mdi:gate",
+  "mdi:lightbulb",
+  "mdi:lightbulb-group",
+  "mdi:lamps",
+  "mdi:ceiling-light",
+  "mdi:sofa",
+  "mdi:bed",
+  "mdi:bathtub",
+  "mdi:stove",
+  "mdi:fridge",
+  "mdi:television",
+  "mdi:music",
+  "mdi:camera",
+  "mdi:video",
+  "mdi:bell",
+  "mdi:bell-ring",
+  "mdi:calendar",
+  "mdi:clock",
+  "mdi:clock-outline",
+  "mdi:weather-night",
+  "mdi:weather-sunny",
+  "mdi:moon-waning-crescent",
+  "mdi:star",
+  "mdi:heart",
+  "mdi:handshake",
+  "mdi:account-plus",
+  "mdi:account-minus",
+  "mdi:account-remove",
+  "mdi:account-check",
+  "mdi:account-cancel",
+  "mdi:crowd",
+  "mdi:family",
+  "mdi:human-greeting",
+  "mdi:map-marker",
+  "mdi:domain",
+  "mdi:store",
+  "mdi:car",
+  "mdi:bike",
+  "mdi:run",
+  "mdi:walk",
+  "mdi:coffee",
+  "mdi:food",
+  "mdi:party-popper",
+  "mdi:gift",
+  "mdi:tag",
+  "mdi:tag-multiple",
+  "mdi:folder-account",
+  "mdi:clipboard-account",
+  "mdi:file-account",
+  "mdi:cog",
+  "mdi:cog-outline",
+  "mdi:information",
+  "mdi:help-circle",
+  "mdi:alert",
+  "mdi:check-circle",
+  "mdi:close-circle",
+];
 
 class HaGroupsPanel extends LitElement {
   static properties = {
@@ -23,6 +131,9 @@ class HaGroupsPanel extends LitElement {
     _draft: { state: true },
     _bindingDraft: { state: true },
     _busy: { state: true },
+    _groupIdManual: { state: true },
+    _iconFilter: { state: true },
+    _iconPickerOpen: { state: true },
   };
 
   static styles = css`
@@ -104,6 +215,7 @@ class HaGroupsPanel extends LitElement {
     .btn-primary { background: var(--accent); color: #f5faf7; }
     .btn-ghost { background: transparent; border-color: var(--line); color: var(--ink-soft); }
     .btn-danger { background: transparent; border-color: rgba(139,46,46,0.35); color: var(--danger); }
+    .btn-sm { padding: 6px 12px; font-size: 0.85rem; }
     .btn:disabled { opacity: 0.55; cursor: not-allowed; }
     .panel {
       background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
@@ -133,6 +245,10 @@ class HaGroupsPanel extends LitElement {
       display: block; font-size: 0.75rem; letter-spacing: 0.06em; text-transform: uppercase;
       color: var(--muted); margin-bottom: 6px;
     }
+    .field .hint {
+      display: block; margin-top: 6px; font-size: 0.78rem; color: var(--muted);
+      text-transform: none; letter-spacing: 0;
+    }
     .field input, .field textarea, .field select {
       width: 100%; font: inherit; padding: 10px 12px; border-radius: 10px;
       border: 1px solid var(--line); background: rgba(255,255,255,0.85); color: var(--ink);
@@ -140,6 +256,7 @@ class HaGroupsPanel extends LitElement {
     .field input:focus, .field textarea:focus, .field select:focus {
       outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-glow);
     }
+    .field input:disabled { opacity: 0.7; background: rgba(0,0,0,0.04); }
     .member-list { list-style: none; margin: 0; padding: 0; }
     .member-list li {
       display: flex; align-items: center; gap: 12px; padding: 10px 12px;
@@ -185,6 +302,38 @@ class HaGroupsPanel extends LitElement {
     .stat .l { font-size: 0.78rem; color: var(--muted); margin-top: 6px; text-transform: uppercase; }
     .chip-row { display: flex; flex-wrap: wrap; gap: 6px; }
     .footer-note { margin-top: 28px; font-size: 0.8rem; color: var(--muted); }
+    .row-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+    .icon-field { display: flex; gap: 10px; align-items: stretch; }
+    .icon-preview {
+      width: 46px; flex-shrink: 0; border-radius: 10px; border: 1px solid var(--line);
+      background: rgba(255,255,255,0.85); display: grid; place-items: center;
+      color: var(--accent-deep);
+    }
+    .icon-preview ha-icon, .icon-preview .icon-fallback { --mdc-icon-size: 24px; font-size: 1.25rem; }
+    .icon-picker {
+      margin-top: 10px; border: 1px solid var(--line); border-radius: 12px;
+      background: rgba(255,255,255,0.7); overflow: hidden;
+    }
+    .icon-picker-toolbar { padding: 10px; border-bottom: 1px solid var(--line); }
+    .icon-grid {
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(88px, 1fr));
+      gap: 6px; max-height: 220px; overflow: auto; padding: 10px;
+    }
+    .icon-cell {
+      display: flex; flex-direction: column; align-items: center; gap: 4px;
+      padding: 8px 4px; border-radius: 10px; border: 1px solid transparent;
+      background: transparent; cursor: pointer; font: inherit; color: var(--ink-soft);
+    }
+    .icon-cell:hover, .icon-cell.selected {
+      border-color: rgba(31,107,79,0.45); background: rgba(31,107,79,0.08);
+      color: var(--accent-deep);
+    }
+    .icon-cell ha-icon, .icon-cell .icon-fallback { --mdc-icon-size: 22px; font-size: 1.15rem; }
+    .icon-cell span {
+      font-size: 0.62rem; line-height: 1.2; text-align: center; word-break: break-all;
+      color: var(--muted); max-width: 100%;
+    }
+    .icon-empty { padding: 16px; color: var(--muted); font-size: 0.85rem; text-align: center; }
   `;
 
   constructor() {
@@ -197,6 +346,9 @@ class HaGroupsPanel extends LitElement {
     this._bindingDraft = null;
     this._busy = false;
     this._unsub = null;
+    this._groupIdManual = false;
+    this._iconFilter = "";
+    this._iconPickerOpen = false;
   }
 
   connectedCallback() {
@@ -271,8 +423,64 @@ class HaGroupsPanel extends LitElement {
     return parts.map((p) => p[0]?.toUpperCase() || "").join("") || "?";
   }
 
+  /** Match backend models._slugify */
+  _slugify(value) {
+    const out = [];
+    let prevDash = false;
+    for (const ch of String(value || "").trim().toLowerCase()) {
+      if (/[a-z0-9]/.test(ch)) {
+        out.push(ch);
+        prevDash = false;
+      } else if (!prevDash) {
+        out.push("-");
+        prevDash = true;
+      }
+    }
+    return out.join("").replace(/^-+|-+$/g, "");
+  }
+
+  _normalizeIcon(value) {
+    const raw = String(value || "").trim();
+    if (!raw) return "mdi:account-group";
+    if (raw.startsWith("mdi:")) return raw;
+    return `mdi:${raw.replace(/^mdi:/, "")}`;
+  }
+
+  _renderHaIcon(icon) {
+    const name = this._normalizeIcon(icon);
+    // ha-icon is provided by HA frontend when the panel is embedded.
+    return html`<ha-icon .icon=${name}></ha-icon>`;
+  }
+
+  _filteredIcons() {
+    const q = String(this._iconFilter || "").trim().toLowerCase().replace(/^mdi:/, "");
+    const current = this._normalizeIcon(this._draft?.icon);
+    const base = MDI_ICON_CHOICES.includes(current)
+      ? MDI_ICON_CHOICES
+      : [current, ...MDI_ICON_CHOICES];
+    if (!q) return base;
+    return base.filter((icon) => icon.toLowerCase().includes(q));
+  }
+
+  _onNameInput(e) {
+    const name = e.target.value;
+    const patch = { ...this._draft, name };
+    if (!this._selectedGroupId && !this._groupIdManual) {
+      patch.group_id = this._slugify(name);
+    }
+    this._draft = patch;
+  }
+
+  _onGroupIdInput(e) {
+    this._groupIdManual = true;
+    this._draft = { ...this._draft, group_id: e.target.value };
+  }
+
   _openCreateGroup() {
     this._selectedGroupId = null;
+    this._groupIdManual = false;
+    this._iconFilter = "";
+    this._iconPickerOpen = false;
     this._draft = {
       name: "",
       group_id: "",
@@ -285,6 +493,9 @@ class HaGroupsPanel extends LitElement {
 
   _openEditGroup(group) {
     this._selectedGroupId = group.id;
+    this._groupIdManual = true;
+    this._iconFilter = "";
+    this._iconPickerOpen = false;
     this._draft = {
       name: group.name,
       group_id: group.id,
@@ -303,20 +514,31 @@ class HaGroupsPanel extends LitElement {
     this._draft = { ...this._draft, member_user_ids: [...set] };
   }
 
+  _pickIcon(icon) {
+    this._draft = { ...this._draft, icon: this._normalizeIcon(icon) };
+    this._iconFilter = "";
+  }
+
   async _saveGroup() {
     if (!this._draft?.name?.trim()) {
       this._error = "Group name is required";
       return;
     }
+    const groupId =
+      this._selectedGroupId ||
+      this._draft.group_id?.trim() ||
+      this._slugify(this._draft.name) ||
+      undefined;
     await this._call("save_group", {
       name: this._draft.name.trim(),
-      group_id: this._draft.group_id || undefined,
+      group_id: groupId,
       description: this._draft.description || "",
-      icon: this._draft.icon || "mdi:account-group",
+      icon: this._normalizeIcon(this._draft.icon),
       member_user_ids: this._draft.member_user_ids || [],
     });
     this._view = "groups";
     this._draft = null;
+    this._iconPickerOpen = false;
   }
 
   async _deleteGroup() {
@@ -329,6 +551,7 @@ class HaGroupsPanel extends LitElement {
 
   _openBindingCreate() {
     this._bindingDraft = {
+      binding_id: "",
       dashboard_url_path: "lovelace",
       include: [],
       exclude: [],
@@ -340,28 +563,60 @@ class HaGroupsPanel extends LitElement {
     this._view = "bindings";
   }
 
+  _openEditBinding(binding) {
+    const loc = binding.locator || {};
+    this._bindingDraft = {
+      binding_id: binding.id,
+      dashboard_url_path: binding.dashboard_url_path || "lovelace",
+      include: [...(binding.expression?.include || [])],
+      exclude: [...(binding.expression?.exclude || [])],
+      label: binding.label || "",
+      locator: {
+        kind: loc.kind || "card",
+        view_path: loc.view_path ?? "",
+        view_index: loc.view_index ?? 0,
+        section_index: loc.section_index ?? 0,
+        card_index: loc.card_index ?? 0,
+      },
+      merge_mode: binding.merge_mode || "ensure_user_branch",
+      fingerprint: binding.fingerprint || "",
+    };
+    this._view = "bindings";
+    this._error = "";
+  }
+
   async _saveBinding() {
     const d = this._bindingDraft;
     if (!d?.include?.length) {
       this._error = "At least one include group is required";
       return;
     }
+    const locator = {
+      kind: d.locator?.kind || "card",
+      view_index: Number(d.locator?.view_index ?? 0),
+      section_index: Number(d.locator?.section_index ?? 0),
+      card_index: Number(d.locator?.card_index ?? 0),
+    };
+    if (d.locator?.view_path) locator.view_path = d.locator.view_path;
     await this._call("save_binding", {
-      binding_id: d.binding_id,
+      binding_id: d.binding_id || undefined,
       dashboard_url_path: d.dashboard_url_path,
       include: d.include,
       exclude: d.exclude || [],
-      locator: d.locator,
-      merge_mode: d.merge_mode,
+      locator,
+      merge_mode: d.merge_mode || "ensure_user_branch",
       fingerprint: d.fingerprint || "",
       label: d.label || "",
     });
     this._bindingDraft = null;
+    // Re-sync so Lovelace visibility reflects the edit immediately.
+    await this._sync(false);
   }
 
   async _deleteBinding(id) {
     if (!confirm("Remove this binding?")) return;
     await this._call("delete_binding", { binding_id: id });
+    if (this._bindingDraft?.binding_id === id) this._bindingDraft = null;
   }
 
   async _sync(dryRun = false) {
@@ -384,7 +639,7 @@ class HaGroupsPanel extends LitElement {
           <div class="brand">HA Groups</div>
           <div class="brand-sub">Home Assistant</div>
           <button class="nav-btn ${this._view === "groups" || this._view === "editor" ? "active" : ""}"
-            @click=${() => { this._view = "groups"; this._draft = null; }}>Groups</button>
+            @click=${() => { this._view = "groups"; this._draft = null; this._iconPickerOpen = false; }}>Groups</button>
           <button class="nav-btn ${this._view === "bindings" ? "active" : ""}"
             @click=${() => { this._view = "bindings"; }}>Bindings</button>
           <button class="nav-btn ${this._view === "automations" ? "active" : ""}"
@@ -432,7 +687,15 @@ class HaGroupsPanel extends LitElement {
               : groups.map(
                   (g) => html`
                     <tr class="row-click" @click=${() => this._openEditGroup(g)}>
-                      <td><strong>${g.name}</strong>${g.description ? html`<div style="color:var(--muted);font-size:0.85rem">${g.description}</div>` : nothing}</td>
+                      <td>
+                        <div style="display:flex;align-items:center;gap:10px">
+                          <span class="icon-preview" style="width:34px;height:34px">${this._renderHaIcon(g.icon || "mdi:account-group")}</span>
+                          <div>
+                            <strong>${g.name}</strong>
+                            ${g.description ? html`<div style="color:var(--muted);font-size:0.85rem">${g.description}</div>` : nothing}
+                          </div>
+                        </div>
+                      </td>
                       <td><span class="pill">${g.member_count ?? (g.member_user_ids || []).length}</span></td>
                       <td style="color:var(--muted);font-size:0.85rem">${g.id}</td>
                     </tr>
@@ -444,36 +707,108 @@ class HaGroupsPanel extends LitElement {
     `;
   }
 
+  _renderIconPicker() {
+    const d = this._draft;
+    if (!d) return nothing;
+    const filtered = this._filteredIcons();
+    const current = this._normalizeIcon(d.icon);
+    return html`
+      <div class="field">
+        <label>Icon</label>
+        <div class="icon-field">
+          <div class="icon-preview">${this._renderHaIcon(current)}</div>
+          <input
+            .value=${current}
+            placeholder="mdi:account-group"
+            @input=${(e) => {
+              this._draft = { ...d, icon: e.target.value };
+              this._iconFilter = e.target.value;
+              this._iconPickerOpen = true;
+            }}
+            @focus=${() => { this._iconPickerOpen = true; }}
+          />
+        </div>
+        <button class="btn btn-ghost btn-sm" style="margin-top:8px"
+          type="button"
+          @click=${() => { this._iconPickerOpen = !this._iconPickerOpen; }}>
+          ${this._iconPickerOpen ? "Hide icon list" : "Browse icons"}
+        </button>
+        ${this._iconPickerOpen
+          ? html`<div class="icon-picker">
+              <div class="icon-picker-toolbar">
+                <input
+                  placeholder="Type to filter (e.g. school, shield, home)"
+                  .value=${this._iconFilter}
+                  @input=${(e) => { this._iconFilter = e.target.value; }}
+                />
+              </div>
+              ${filtered.length === 0
+                ? html`<div class="icon-empty">No icons match. Keep typing a full <code>mdi:…</code> name above.</div>`
+                : html`<div class="icon-grid">
+                    ${filtered.map(
+                      (icon) => html`
+                        <button
+                          type="button"
+                          class="icon-cell ${icon === current ? "selected" : ""}"
+                          title=${icon}
+                          @click=${() => this._pickIcon(icon)}
+                        >
+                          ${this._renderHaIcon(icon)}
+                          <span>${icon.replace(/^mdi:/, "")}</span>
+                        </button>
+                      `
+                    )}
+                  </div>`}
+            </div>`
+          : nothing}
+        <span class="hint">Preview uses Home Assistant’s MDI set. Any valid <code>mdi:</code> name works.</span>
+      </div>
+    `;
+  }
+
   _renderEditor() {
     const d = this._draft;
     if (!d) return nothing;
     const selected = new Set(d.member_user_ids || []);
+    const editing = !!this._selectedGroupId;
+    const suggested = this._slugify(d.name);
     return html`
       <div class="hero">
-        <h1>${d.group_id ? "Edit group" : "New group"}</h1>
+        <h1>${editing ? "Edit group" : "New group"}</h1>
         <p>Friendly names are shown first. User IDs appear as subtitles on member rows.</p>
       </div>
       <div class="layout-2">
         <div class="panel" style="padding:18px">
           <h2 class="section-title">Details</h2>
           <div class="field"><label>Name</label>
-            <input .value=${d.name} @input=${(e) => (this._draft = { ...d, name: e.target.value })} />
+            <input .value=${d.name} @input=${this._onNameInput} />
           </div>
           <div class="field"><label>Group ID (slug)</label>
-            <input .value=${d.group_id} ?disabled=${!!this._selectedGroupId}
-              @input=${(e) => (this._draft = { ...d, group_id: e.target.value })} />
+            <input
+              .value=${d.group_id}
+              ?disabled=${editing}
+              placeholder=${suggested || "auto-from-name"}
+              @input=${this._onGroupIdInput}
+            />
+            ${editing
+              ? html`<span class="hint">ID is fixed after creation.</span>`
+              : html`<span class="hint">
+                  ${this._groupIdManual
+                    ? "Custom ID — clear and rename to resume auto-slug."
+                    : suggested
+                      ? html`Auto-generated as <code>${suggested}</code> — edit to override.`
+                      : "Filled automatically from the name."}
+                </span>`}
           </div>
           <div class="field"><label>Description</label>
             <textarea rows="3" .value=${d.description}
               @input=${(e) => (this._draft = { ...d, description: e.target.value })}></textarea>
           </div>
-          <div class="field"><label>Icon</label>
-            <input .value=${d.icon} @input=${(e) => (this._draft = { ...d, icon: e.target.value })} />
-          </div>
+          ${this._renderIconPicker()}
           <div class="toolbar">
             <button class="btn btn-primary" ?disabled=${this._busy} @click=${this._saveGroup}>Save</button>
-            <button class="btn btn-ghost" @click=${() => { this._view = "groups"; this._draft = null; }}>Cancel</button>
-            ${this._selectedGroupId
+            <button class="btn btn-ghost" @click=${() => { this._view = "groups"; this._draft = null; this._iconPickerOpen = false; }}>Cancel</button>
+            ${editing
               ? html`<span class="spacer"></span>
                   <button class="btn btn-danger" ?disabled=${this._busy} @click=${this._deleteGroup}>Delete</button>`
               : nothing}
@@ -516,8 +851,95 @@ class HaGroupsPanel extends LitElement {
     `;
   }
 
-  _renderBindings() {
+  _renderBindingForm() {
     const d = this._bindingDraft;
+    if (!d) return nothing;
+    const editing = !!d.binding_id;
+    return html`<div class="panel" style="padding:18px;margin-bottom:18px">
+      <h2 class="section-title">${editing ? "Edit binding" : "New binding"}</h2>
+      <div class="layout-2">
+        <div>
+          ${editing
+            ? html`<div class="field"><label>Binding ID</label>
+                <input .value=${d.binding_id} disabled />
+              </div>`
+            : nothing}
+          <div class="field"><label>Label</label>
+            <input .value=${d.label || ""} @input=${(e) => (this._bindingDraft = { ...d, label: e.target.value })} />
+          </div>
+          <div class="field"><label>Dashboard url path</label>
+            <input .value=${d.dashboard_url_path}
+              @input=${(e) => (this._bindingDraft = { ...d, dashboard_url_path: e.target.value })} />
+          </div>
+          <div class="field"><label>Include groups (AND)</label>
+            <select multiple style="min-height:110px"
+              @change=${(e) => {
+                const vals = [...e.target.selectedOptions].map((o) => o.value);
+                this._bindingDraft = { ...d, include: vals };
+              }}>
+              ${this._groups.map(
+                (g) => html`<option value=${g.id} ?selected=${(d.include || []).includes(g.id)}>${g.name}</option>`
+              )}
+            </select>
+          </div>
+          <div class="field"><label>Exclude groups (NOT)</label>
+            <select multiple style="min-height:90px"
+              @change=${(e) => {
+                const vals = [...e.target.selectedOptions].map((o) => o.value);
+                this._bindingDraft = { ...d, exclude: vals };
+              }}>
+              ${this._groups.map(
+                (g) => html`<option value=${g.id} ?selected=${(d.exclude || []).includes(g.id)}>${g.name}</option>`
+              )}
+            </select>
+          </div>
+        </div>
+        <div>
+          <div class="field"><label>Locator kind</label>
+            <select .value=${d.locator?.kind || "card"}
+              @change=${(e) => (this._bindingDraft = { ...d, locator: { ...d.locator, kind: e.target.value } })}>
+              <option value="view">view</option>
+              <option value="section">section</option>
+              <option value="card">card</option>
+              <option value="other">other</option>
+            </select>
+          </div>
+          <div class="field"><label>View index</label>
+            <input type="number" .value=${d.locator?.view_index ?? 0}
+              @input=${(e) => (this._bindingDraft = { ...d, locator: { ...d.locator, view_index: Number(e.target.value) } })} />
+          </div>
+          <div class="field"><label>Section index</label>
+            <input type="number" .value=${d.locator?.section_index ?? 0}
+              @input=${(e) => (this._bindingDraft = { ...d, locator: { ...d.locator, section_index: Number(e.target.value) } })} />
+          </div>
+          <div class="field"><label>Card index</label>
+            <input type="number" .value=${d.locator?.card_index ?? 0}
+              @input=${(e) => (this._bindingDraft = { ...d, locator: { ...d.locator, card_index: Number(e.target.value) } })} />
+          </div>
+          <div class="field"><label>Merge mode</label>
+            <select .value=${d.merge_mode || "ensure_user_branch"}
+              @change=${(e) => (this._bindingDraft = { ...d, merge_mode: e.target.value })}>
+              <option value="ensure_user_branch">ensure_user_branch</option>
+              <option value="replace_user_condition">replace_user_condition</option>
+            </select>
+          </div>
+          <div class="field"><label>Fingerprint (optional)</label>
+            <input .value=${d.fingerprint || ""}
+              @input=${(e) => (this._bindingDraft = { ...d, fingerprint: e.target.value })} />
+          </div>
+          <div class="toolbar">
+            <button class="btn btn-primary" ?disabled=${this._busy} @click=${this._saveBinding}>
+              ${editing ? "Save & sync" : "Save binding"}
+            </button>
+            <button class="btn btn-ghost" @click=${() => (this._bindingDraft = null)}>Cancel</button>
+          </div>
+        </div>
+      </div>
+      <div class="callout warn">Dashboard browser / live node picker is stubbed for the next phase — enter locator indices manually for now. Saving an edit re-syncs Lovelace.</div>
+    </div>`;
+  }
+
+  _renderBindings() {
     return html`
       <div class="hero">
         <h1>Visibility bindings</h1>
@@ -528,76 +950,7 @@ class HaGroupsPanel extends LitElement {
         <span class="spacer"></span>
         <button class="btn btn-ghost" ?disabled=${this._busy} @click=${() => this._sync(false)}>Sync now</button>
       </div>
-      ${d
-        ? html`<div class="panel" style="padding:18px;margin-bottom:18px">
-            <h2 class="section-title">${d.binding_id ? "Edit binding" : "New binding"}</h2>
-            <div class="layout-2">
-              <div>
-                <div class="field"><label>Label</label>
-                  <input .value=${d.label || ""} @input=${(e) => (this._bindingDraft = { ...d, label: e.target.value })} />
-                </div>
-                <div class="field"><label>Dashboard url path</label>
-                  <input .value=${d.dashboard_url_path}
-                    @input=${(e) => (this._bindingDraft = { ...d, dashboard_url_path: e.target.value })} />
-                </div>
-                <div class="field"><label>Include groups (AND)</label>
-                  <select multiple style="min-height:110px"
-                    @change=${(e) => {
-                      const vals = [...e.target.selectedOptions].map((o) => o.value);
-                      this._bindingDraft = { ...d, include: vals };
-                    }}>
-                    ${this._groups.map(
-                      (g) => html`<option value=${g.id} ?selected=${(d.include || []).includes(g.id)}>${g.name}</option>`
-                    )}
-                  </select>
-                </div>
-                <div class="field"><label>Exclude groups (NOT)</label>
-                  <select multiple style="min-height:90px"
-                    @change=${(e) => {
-                      const vals = [...e.target.selectedOptions].map((o) => o.value);
-                      this._bindingDraft = { ...d, exclude: vals };
-                    }}>
-                    ${this._groups.map(
-                      (g) => html`<option value=${g.id} ?selected=${(d.exclude || []).includes(g.id)}>${g.name}</option>`
-                    )}
-                  </select>
-                </div>
-              </div>
-              <div>
-                <div class="field"><label>Locator kind</label>
-                  <select .value=${d.locator?.kind || "card"}
-                    @change=${(e) => (this._bindingDraft = { ...d, locator: { ...d.locator, kind: e.target.value } })}>
-                    <option value="view">view</option>
-                    <option value="section">section</option>
-                    <option value="card">card</option>
-                    <option value="other">other</option>
-                  </select>
-                </div>
-                <div class="field"><label>View index</label>
-                  <input type="number" .value=${d.locator?.view_index ?? 0}
-                    @input=${(e) => (this._bindingDraft = { ...d, locator: { ...d.locator, view_index: Number(e.target.value) } })} />
-                </div>
-                <div class="field"><label>Section index</label>
-                  <input type="number" .value=${d.locator?.section_index ?? 0}
-                    @input=${(e) => (this._bindingDraft = { ...d, locator: { ...d.locator, section_index: Number(e.target.value) } })} />
-                </div>
-                <div class="field"><label>Card index</label>
-                  <input type="number" .value=${d.locator?.card_index ?? 0}
-                    @input=${(e) => (this._bindingDraft = { ...d, locator: { ...d.locator, card_index: Number(e.target.value) } })} />
-                </div>
-                <div class="field"><label>Fingerprint (optional)</label>
-                  <input .value=${d.fingerprint || ""}
-                    @input=${(e) => (this._bindingDraft = { ...d, fingerprint: e.target.value })} />
-                </div>
-                <div class="toolbar">
-                  <button class="btn btn-primary" ?disabled=${this._busy} @click=${this._saveBinding}>Save binding</button>
-                  <button class="btn btn-ghost" @click=${() => (this._bindingDraft = null)}>Cancel</button>
-                </div>
-              </div>
-            </div>
-            <div class="callout warn">Dashboard browser / live node picker is stubbed for the next phase — enter locator indices manually for now.</div>
-          </div>`
-        : nothing}
+      ${this._renderBindingForm()}
       <div class="panel">
         <table>
           <thead><tr><th>Label</th><th>Dashboard</th><th>Include ∩</th><th>Exclude</th><th>Status</th><th></th></tr></thead>
@@ -605,13 +958,18 @@ class HaGroupsPanel extends LitElement {
             ${this._bindings.length === 0
               ? html`<tr><td colspan="6">No bindings yet.</td></tr>`
               : this._bindings.map(
-                  (b) => html`<tr>
+                  (b) => html`<tr class="row-click" @click=${() => this._openEditBinding(b)}>
                     <td>${b.label || b.id}</td>
                     <td>${b.dashboard_url_path}</td>
                     <td><div class="chip-row">${(b.expression?.include || []).map((id) => html`<span class="pill">${id}</span>`)}</div></td>
                     <td><div class="chip-row">${(b.expression?.exclude || []).map((id) => html`<span class="pill warn">${id}</span>`)}</div></td>
                     <td>${b.stale ? html`<span class="pill warn">stale</span>` : html`<span class="pill">ok</span>`}</td>
-                    <td><button class="btn btn-danger" @click=${() => this._deleteBinding(b.id)}>Remove</button></td>
+                    <td>
+                      <div class="row-actions" @click=${(e) => e.stopPropagation()}>
+                        <button class="btn btn-ghost btn-sm" @click=${() => this._openEditBinding(b)}>Edit</button>
+                        <button class="btn btn-danger btn-sm" @click=${() => this._deleteBinding(b.id)}>Remove</button>
+                      </div>
+                    </td>
                   </tr>`
                 )}
           </tbody>
