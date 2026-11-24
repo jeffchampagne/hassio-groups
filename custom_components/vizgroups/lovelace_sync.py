@@ -24,7 +24,7 @@ from .const import (
 from .membership import effective_users
 from .models import Binding, SyncMetadata, _utcnow_iso
 from .store import GroupsStore
-from .sync import apply_binding_to_config
+from .sync import apply_binding_to_config, list_visibility_nodes, locators_match
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -252,6 +252,42 @@ class LovelaceSyncEngine:
                     _upsert(url, title=title, mode="yaml")
         except Exception:  # noqa: BLE001
             pass
+
+        # Registry is the source of truth for storage dashboards (Overview + user).
+        # HA's in-memory dashboards map sometimes omits the default Overview.
+        try:
+            reg_path = self.hass.config.path(".storage/lovelace_dashboards")
+            with open(reg_path, encoding="utf-8") as handle:
+                reg = json.load(handle)
+            for item in ((reg.get("data") or {}).get("items") or []):
+                if not isinstance(item, dict):
+                    continue
+                url = item.get("url_path") or item.get("id")
+                if not url:
+                    continue
+                url = "lovelace" if url in ("default",) else str(url)
+                if url in seen:
+                    # Refresh title/mode from registry when richer.
+                    for row in items:
+                        if row["url_path"] != url:
+                            continue
+                        if item.get("title"):
+                            row["title"] = str(item["title"])
+                        if item.get("mode"):
+                            row["mode"] = str(item["mode"])
+                        break
+                    continue
+                seen.add(url)
+                items.append(
+                    {
+                        "url_path": url,
+                        "title": str(item.get("title") or url),
+                        "mode": str(item.get("mode") or "storage"),
+                    }
+                )
+        except Exception:  # noqa: BLE001
+            pass
+
         items.sort(key=lambda d: (d["url_path"] != "lovelace", d["title"].casefold()))
         return items
 
@@ -315,16 +351,46 @@ class LovelaceSyncEngine:
         return None
 
 
-    def _lovelace_dashboard_registry_items(self) -> list[dict[str, Any]]:
-        """Items from `.storage/lovelace_dashboards` (best-effort)."""
-        reg_path = self.hass.config.path(".storage/lovelace_dashboards")
+    def _storage_key_candidates(self, url_path: str | None) -> list[str]:
+        """Possible .storage keys for a dashboard url_path.
+
+        Overview is stored as ``lovelace.lovelace`` on modern HA (not bare
+        ``lovelace``). Custom dashboards use ``lovelace.<id>``.
+        """
+        is_overview = url_path in (None, "", "lovelace", "default")
+        path = "lovelace" if is_overview else str(url_path)
+        underscored = path.replace("-", "_")
+        keys: list[str] = []
+        if is_overview:
+            keys.extend(["lovelace.lovelace", "lovelace"])
+        else:
+            keys.append(f"lovelace.{underscored}")
+            if underscored != path:
+                keys.append(f"lovelace.{path}")
+        # Prefer registry id from lovelace_dashboards when present
         try:
             with open(reg_path, encoding="utf-8") as handle:
                 reg = json.load(handle)
+            for item in ((reg.get("data") or {}).get("items") or []):
+                if not isinstance(item, dict):
+                    continue
+                if (
+                    item.get("url_path") == path
+                    or item.get("id") == underscored
+                    or item.get("id") == path
+                ):
+                    dash_id = item.get("id")
+                    if dash_id:
+                        key = f"lovelace.{dash_id}"
+                        if key not in keys:
+                            keys.insert(0, key)
         except Exception:  # noqa: BLE001
-            return []
-        items = ((reg.get("data") or {}).get("items") or []) if isinstance(reg, dict) else []
-        return [item for item in items if isinstance(item, dict)]
+            pass
+        out: list[str] = []
+        for key in keys:
+            if key not in out:
+                out.append(key)
+        return out
 
     def _storage_key_candidates(self, url_path: str | None) -> list[str]:
         """Possible .storage keys for a dashboard url_path."""
@@ -574,7 +640,16 @@ class LovelaceSyncEngine:
                 continue
 
             dirty = False
+            # Resolve breadcrumbs once per dashboard so Manage visibility can
+            # show view › section › … under the element label.
+            nodes = list_visibility_nodes(config)
             for binding in bindings:
+                for node in nodes:
+                    if locators_match(binding.locator, node.get("locator")):
+                        crumb = str(node.get("breadcrumb") or "")
+                        if crumb and getattr(binding, "breadcrumb", "") != crumb:
+                            binding.breadcrumb = crumb
+                        break
                 users = self.compute_users_for_binding(
                     binding, members_by_group=members_by_group
                 )
