@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import os
 import logging
 from typing import Any
 
@@ -152,32 +154,226 @@ class LovelaceSyncEngine:
                     )
         except Exception:  # noqa: BLE001
             pass
+
+        # Discover YAML files under lovelace/ that are not yet registered.
+        try:
+            lovelace_dir = self.hass.config.path("lovelace")
+            if os.path.isdir(lovelace_dir):
+                for name in sorted(os.listdir(lovelace_dir)):
+                    if not name.endswith(".yaml"):
+                        continue
+                    stem = name[:-5]
+                    url = stem.replace("_", "-")
+                    if url in seen or stem in seen:
+                        continue
+                    seen.add(url)
+                    title = "HA Groups Lab" if url == "ha-groups-lab" else url.replace("-", " ").title()
+                    items.append(
+                        {
+                            "url_path": url,
+                            "title": title,
+                            "mode": "yaml",
+                        }
+                    )
+        except Exception:  # noqa: BLE001
+            pass
         items.sort(key=lambda d: (d["url_path"] != "lovelace", d["title"].casefold()))
         return items
 
     def _get_dashboard(self, url_path: str | None) -> Any:
+        """Resolve a dashboard. Do not silently fall back when a specific path was requested."""
         dashboards = self._dashboards()
+        # Default overview
+        if url_path in (None, "", "lovelace", "default"):
+            dashboard = None
+            try:
+                dashboard = dashboards.get(None)
+            except Exception:  # noqa: BLE001
+                dashboard = None
+            if dashboard is None:
+                try:
+                    dashboard = dashboards.get("")
+                except Exception:  # noqa: BLE001
+                    dashboard = None
+            if dashboard is None:
+                raise HomeAssistantError("Default Lovelace dashboard not found")
+            return dashboard
+
         try:
             dashboard = dashboards.get(url_path)
         except Exception as err:  # noqa: BLE001
             raise HomeAssistantError(f"Dashboard not found: {url_path}") from err
         if dashboard is None:
-            dashboard = dashboards.get(None) or dashboards.get("")
-        if dashboard is None:
             raise HomeAssistantError(f"Dashboard not found: {url_path}")
         return dashboard
 
+    def _yaml_filename_for(self, url_path: str | None, dashboard: Any | None = None) -> str | None:
+        """Resolve YAML filename for a dashboard url_path."""
+        if dashboard is not None:
+            filename = (
+                getattr(dashboard, "filename", None)
+                or getattr(dashboard, "_filename", None)
+            )
+            cfg = getattr(dashboard, "_config", None) or getattr(dashboard, "config", None) or {}
+            if not filename and isinstance(cfg, dict):
+                filename = cfg.get("filename")
+            if filename:
+                return str(filename)
+        if not url_path:
+            return None
+        try:
+            from homeassistant.config import load_yaml_config_file
+
+            conf = load_yaml_config_file(self.hass.config.path("configuration.yaml"))
+            dash_conf = ((conf.get("lovelace") or {}).get("dashboards") or {}).get(url_path) or {}
+            if isinstance(dash_conf, dict) and dash_conf.get("filename"):
+                return str(dash_conf.get("filename"))
+        except Exception:  # noqa: BLE001
+            pass
+        # Convention: lovelace/<url_path>.yaml (and underscore variant).
+        for candidate in (f"lovelace/{url_path}.yaml", f"lovelace/{str(url_path).replace('-', '_')}.yaml"):
+            if os.path.isfile(self.hass.config.path(candidate)):
+                return candidate
+        return None
+
+
+    def _storage_key_candidates(self, url_path: str | None) -> list[str]:
+        """Possible .storage keys for a dashboard url_path."""
+        if url_path in (None, "", "lovelace", "default"):
+            return ["lovelace"]
+        path = str(url_path)
+        underscored = path.replace("-", "_")
+        keys = [f"lovelace.{underscored}"]
+        if underscored != path:
+            keys.append(f"lovelace.{path}")
+        # Also try registry id from lovelace_dashboards if present
+        try:
+            reg_path = self.hass.config.path(".storage/lovelace_dashboards")
+            with open(reg_path, encoding="utf-8") as handle:
+                reg = json.load(handle)
+            for item in ((reg.get("data") or {}).get("items") or []):
+                if not isinstance(item, dict):
+                    continue
+                if item.get("url_path") == path or item.get("id") == underscored:
+                    dash_id = item.get("id")
+                    if dash_id:
+                        key = f"lovelace.{dash_id}"
+                        if key not in keys:
+                            keys.insert(0, key)
+        except Exception:  # noqa: BLE001
+            pass
+        return keys
+
+    def _load_storage_file_config(self, url_path: str | None) -> dict[str, Any] | None:
+        """Load Lovelace config from .storage JSON when async_load fails."""
+        for key in self._storage_key_candidates(url_path):
+            path = self.hass.config.path(f".storage/{key}")
+            try:
+                with open(path, encoding="utf-8") as handle:
+                    payload = json.load(handle)
+            except FileNotFoundError:
+                continue
+            except Exception as err:  # noqa: BLE001
+                _LOGGER.warning("Failed reading storage %s: %s", key, err)
+                continue
+            data = payload.get("data") if isinstance(payload, dict) else None
+            if not isinstance(data, dict):
+                continue
+            config = data.get("config")
+            if isinstance(config, dict) and isinstance(config.get("views"), list):
+                _LOGGER.info(
+                    "Loaded storage dashboard %s from .storage/%s (%s views)",
+                    url_path or "lovelace",
+                    key,
+                    len(config.get("views") or []),
+                )
+                return config
+        return None
+
+    def _load_yaml_file_config(self, filename: str) -> dict[str, Any]:
+        path = self.hass.config.path(str(filename))
+        with open(path, encoding="utf-8") as handle:
+            data = yaml.safe_load(handle) or {}
+        if not isinstance(data, dict):
+            raise HomeAssistantError(f"YAML dashboard {filename} is not a mapping")
+        return data
+
     async def async_get_lovelace_config(self, url_path: str | None) -> dict[str, Any]:
-        """Fetch a dashboard config via lovelace API (storage or yaml)."""
-        dashboard = self._get_dashboard(url_path)
+        """Fetch a dashboard config via lovelace API (storage or yaml), with YAML file fallback."""
+        display = url_path or "lovelace"
+        try:
+            dashboard = self._get_dashboard(url_path)
+        except HomeAssistantError:
+            # YAML-only registration may exist in configuration.yaml before API exposes it.
+            filename = await self.hass.async_add_executor_job(
+                self._yaml_filename_for, url_path, None
+            )
+            if not filename:
+                raise
+            config = await self.hass.async_add_executor_job(self._load_yaml_file_config, filename)
+            if not isinstance(config.get("views"), list):
+                raise HomeAssistantError(
+                    f"Dashboard '{display}' YAML {filename} has no views"
+                )
+            return config
+
         mode_val = _mode_str(getattr(dashboard, "mode", None))
         if mode_val not in ("storage", "yaml"):
             raise HomeAssistantError(
-                f"Dashboard '{url_path}' is mode={mode_val}; HA Groups supports storage/yaml"
+                f"Dashboard '{display}' is mode={mode_val}; HA Groups supports storage/yaml"
             )
-        config = await dashboard.async_load(False)
-        if not isinstance(config, dict):
-            raise HomeAssistantError("Invalid lovelace config payload")
+
+        config: dict[str, Any] | None = None
+        try:
+            loaded = await dashboard.async_load(False)
+            if isinstance(loaded, dict):
+                config = loaded
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.warning("Lovelace async_load failed for %s: %s", display, err)
+            config = None
+
+        # Some YAML dashboards return empty/partial payloads — fall back to file.
+        if mode_val == "yaml" and (
+            not isinstance(config, dict) or not isinstance(config.get("views"), list)
+        ):
+            filename = self._yaml_filename_for(url_path if url_path not in (None, "", "lovelace", "default") else None, dashboard)
+            if not filename and url_path not in (None, "", "lovelace", "default"):
+                filename = await self.hass.async_add_executor_job(
+                    self._yaml_filename_for, url_path, None
+                )
+            if filename:
+                config = await self.hass.async_add_executor_job(
+                    self._load_yaml_file_config, filename
+                )
+                _LOGGER.info(
+                    "Loaded YAML dashboard %s from file %s (%s views)",
+                    display,
+                    filename,
+                    len(config.get("views") or []) if isinstance(config, dict) else 0,
+                )
+
+        # Storage dashboards: async_load can fail (esp. Overview) — read .storage JSON.
+        if mode_val == "storage" and (
+            not isinstance(config, dict) or not isinstance(config.get("views"), list)
+        ):
+            stored = await self.hass.async_add_executor_job(
+                self._load_storage_file_config, url_path
+            )
+            if isinstance(stored, dict):
+                config = stored
+
+        if not isinstance(config, dict) or not isinstance(config.get("views"), list):
+            # Overview often has no .storage/lovelace yet — return empty rather than hard-fail
+            # so the panel can show a clear empty state instead of a WS error.
+            if url_path in (None, "", "lovelace", "default"):
+                _LOGGER.info(
+                    "Overview has no loadable views; returning empty config for preview"
+                )
+                return {"title": "Overview", "views": []}
+            raise HomeAssistantError(
+                f"Invalid lovelace config payload for '{display}' "
+                f"(mode={mode_val}, type={type(config).__name__})"
+            )
         return config
 
     async def async_save_lovelace_config(
@@ -189,37 +385,32 @@ class LovelaceSyncEngine:
             await dashboard.async_save(config)
             return
         if mode_val == "yaml":
-            # LovelaceYAML exposes an absolute `.path`; prefer that over filename guesswork.
-            path = getattr(dashboard, "path", None)
-            filename: str | None = None
-            if path:
-                path = str(path)
-            else:
-                filename = (
-                    getattr(dashboard, "filename", None)
-                    or getattr(dashboard, "_filename", None)
-                )
-                cfg = (
-                    getattr(dashboard, "_config", None)
-                    or getattr(dashboard, "config", None)
-                    or {}
-                )
-                if not filename and isinstance(cfg, dict):
-                    filename = cfg.get("filename")
-                if not filename and url_path:
-                    # Fall back to lovelace.dashboards registration in configuration.yaml
-                    try:
-                        from homeassistant.config import load_yaml_config_file
+            filename = (
+                getattr(dashboard, "filename", None)
+                or getattr(dashboard, "_filename", None)
+            )
+            cfg = getattr(dashboard, "_config", None) or getattr(dashboard, "config", None) or {}
+            if not filename and isinstance(cfg, dict):
+                filename = cfg.get("filename")
+            if not filename and url_path:
+                # Fall back to lovelace.dashboards registration in configuration.yaml
+                try:
+                    from homeassistant.config import load_yaml_config_file
 
-                        conf = load_yaml_config_file(
-                            self.hass.config.path("configuration.yaml")
-                        )
-                        dash_conf = (
-                            (conf.get("lovelace") or {}).get("dashboards") or {}
-                        ).get(url_path) or {}
-                        filename = dash_conf.get("filename")
-                    except Exception:  # noqa: BLE001
-                        filename = None
+                    conf = load_yaml_config_file(self.hass.config.path("configuration.yaml"))
+                    dash_conf = (
+                        (conf.get("lovelace") or {}).get("dashboards") or {}
+                    ).get(url_path) or {}
+                    filename = dash_conf.get("filename")
+                except Exception:  # noqa: BLE001
+                    filename = None
+            if not filename and url_path:
+                filename = self._yaml_filename_for(url_path, dashboard)
+            # Prefer LovelaceYAML absolute path when present.
+            abs_path = getattr(dashboard, "path", None)
+            if abs_path:
+                path = str(abs_path)
+            else:
                 if not filename:
                     raise HomeAssistantError(
                         f"YAML dashboard '{url_path}' has no path/filename to write"

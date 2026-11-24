@@ -54,10 +54,13 @@ async def async_register_panel(hass: HomeAssistant) -> None:
 
 
 def async_register_websocket(hass: HomeAssistant) -> None:
-    """Register admin-only websocket commands for the panel."""
+    """Register admin-only websocket commands for the panel.
+
+    Always (re)register so file updates on disk are picked up after config-entry
+    reload without requiring a full Core restart. HA keeps a command dict keyed
+    by ``type``; registering again replaces the handler.
+    """
     bucket = hass.data.setdefault(DOMAIN, {})
-    if bucket.get("websocket"):
-        return
     websocket_api.async_register_command(hass, ws_subscribe)
     websocket_api.async_register_command(hass, ws_list_users)
     websocket_api.async_register_command(hass, ws_save_group)

@@ -328,6 +328,52 @@ class HassioGroupsRuntime:
         async def unbind_element(call: ServiceCall) -> None:
             await self.store.delete_binding(call.data[ATTR_BINDING_ID])
 
+        async def debug_dashboard(call: ServiceCall) -> dict[str, Any]:
+            path = call.data.get("dashboard") or call.data.get(ATTR_DASHBOARD) or "lovelace"
+            url_key: str | None = None if path in ("lovelace", "default") else str(path)
+            dashboards = []
+            try:
+                dashboards = self.sync_engine.list_dashboards()
+            except Exception as err:  # noqa: BLE001
+                dashboards = [{"error": str(err)}]
+            payload: dict[str, Any] = {
+                "requested": path,
+                "url_key": url_key,
+                "dashboards": dashboards,
+            }
+            try:
+                config = await self.sync_engine.async_get_lovelace_config(url_key)
+                from .sync import build_dashboard_preview_tree, list_visibility_nodes
+
+                tree = build_dashboard_preview_tree(config)
+                nodes = list_visibility_nodes(config)
+                payload.update(
+                    {
+                        "ok": True,
+                        "config_keys": sorted(config.keys()),
+                        "view_count": len(config.get("views") or []),
+                        "view_titles": [
+                            (v.get("title") or v.get("path") or f"view-{i}")
+                            for i, v in enumerate(config.get("views") or [])
+                            if isinstance(v, dict)
+                        ],
+                        "tree_count": len(tree),
+                        "node_count": len(nodes),
+                        "tree_summary": [
+                            {
+                                "label": v.get("label"),
+                                "path": v.get("path"),
+                                "sections": len(v.get("sections") or []),
+                                "cards": len(v.get("cards") or []),
+                            }
+                            for v in tree
+                        ],
+                    }
+                )
+            except Exception as err:  # noqa: BLE001
+                payload.update({"ok": False, "error": str(err)})
+            return payload
+
         async def sync_now(call: ServiceCall) -> None:
             await self.sync_engine.async_sync(
                 dashboard=call.data.get(ATTR_DASHBOARD),
@@ -408,6 +454,11 @@ class HassioGroupsRuntime:
                     vol.Optional("dry_run"): cv.boolean,
                 }
             ),
+            "debug_dashboard": vol.Schema(
+                {
+                    vol.Optional("dashboard"): cv.string,
+                }
+            ),
             "is_member": vol.Schema(
                 {
                     vol.Required("group_id"): cv.string,
@@ -438,6 +489,13 @@ class HassioGroupsRuntime:
             schema=schemas["is_member"],
             supports_response=SupportsResponse.ONLY,
         )
+        self.hass.services.async_register(
+            DOMAIN,
+            "debug_dashboard",
+            debug_dashboard,
+            schema=schemas["debug_dashboard"],
+            supports_response=SupportsResponse.ONLY,
+        )
         self._services_registered = True
         _LOGGER.debug("Registered %s services", NAME)
 
@@ -459,6 +517,7 @@ class HassioGroupsRuntime:
             "unbind_element",
             "sync",
             "is_member",
+            "debug_dashboard",
         ):
             if self.hass.services.has_service(DOMAIN, name):
                 self.hass.services.async_remove(DOMAIN, name)
