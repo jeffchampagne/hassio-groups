@@ -109,7 +109,11 @@ class HassioGroupsRuntime:
         result = self.hass.auth.async_get_users()
         if not inspect.isawaitable(result):
             return list(result)
-        # HA 2026+: async_get_users is a coroutine. Prefer auth store, else person-linked stubs.
+        # HA 2026+: async_get_users is a coroutine — close it; do not leave un-awaited.
+        close = getattr(result, "close", None)
+        if callable(close):
+            close()
+        # Prefer auth store, else person-linked stubs.
         store = getattr(self.hass.auth, "_store", None)
         for attr in ("users", "_users", "data"):
             users = getattr(store, attr, None) if store is not None else None
