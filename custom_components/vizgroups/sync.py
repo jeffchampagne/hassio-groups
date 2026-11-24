@@ -850,7 +850,7 @@ def audit_dashboard_user_visibility(
         # Prefer real title from resolved Lovelace node (mushroom primary, title, …).
         label = _node_label(
             resolved,
-            fallback=str(node.get("label") or node.get("kind") or "Untitled"),
+            fallback=str(node.get("kind") or "Untitled"),
         )
         # If label collapsed to the type string, treat as missing.
         if label.strip().lower() == str(elem_type).strip().lower():
@@ -1046,7 +1046,10 @@ def _preview_card_node(
 
 
 def build_dashboard_preview_tree(config: dict[str, Any]) -> list[dict[str, Any]]:
-    """Hierarchical view → section → card tree for the visual locator picker."""
+    """Hierarchical view → section → card tree for the visual locator picker.
+
+    Nested container cards (expander / stacks / grid / conditional) appear as children.
+    """
     tree: list[dict[str, Any]] = []
     views = config.get("views")
     if not isinstance(views, list):

@@ -1638,6 +1638,8 @@ class VizGroupsPanel extends LitElement {
     else if (locator.view_index != null) bits.push(`view:${locator.view_index}`);
     if (locator.section_index != null) bits.push(`section:${locator.section_index}`);
     if (locator.card_index != null) bits.push(`card:${locator.card_index}`);
+    const nest = this._nestedPath(locator);
+    if (nest.length) bits.push(`nest:${nest.join(".")}`);
     if (fingerprint) bits.push(fingerprint.split("|")[0]);
     return bits.join(" · ");
   }
@@ -1645,7 +1647,19 @@ class VizGroupsPanel extends LitElement {
   _nodeKey(node) {
     if (!node?.locator) return "";
     const l = node.locator;
-    return [l.kind, l.view_path || l.view_index, l.section_index, l.card_index, node.fingerprint || ""].join("|");
+    const nest = this._nestedPath(l).join(".");
+    return [l.kind, l.view_path || l.view_index, l.section_index, l.card_index, nest, node.fingerprint || ""].join("|");
+  }
+
+  /** Nested path steps from extra.nested_path (or legacy card_path). */
+  _nestedPath(locator = {}) {
+    const raw = locator?.extra?.nested_path ?? locator?.nested_path ?? locator?.card_path;
+    if (!Array.isArray(raw)) return [];
+    return raw.map((step) => {
+      if (step === "card") return "card";
+      const n = Number(step);
+      return Number.isInteger(n) && n >= 0 ? n : null;
+    }).filter((step) => step !== null);
   }
 
   _openDashboardPicker() {
@@ -1752,7 +1766,9 @@ class VizGroupsPanel extends LitElement {
           locator: { ...n.locator },
           fingerprint: n.fingerprint || "",
           has_visibility: !!n.has_visibility,
+          cards: [],
         };
+        let bucket = view.cards;
         if (loc.section_index != null && loc.section_index !== "") {
           const sKey = String(loc.section_index);
           if (!view._sectionMap.has(sKey)) {
@@ -1772,9 +1788,31 @@ class VizGroupsPanel extends LitElement {
             view._sectionMap.set(sKey, section);
             view.sections.push(section);
           }
-          view._sectionMap.get(sKey).cards.push(card);
+          bucket = view._sectionMap.get(sKey).cards;
+        }
+        const nest = this._nestedPath(loc);
+        if (!nest.length) {
+          bucket.push(card);
         } else {
-          view.cards.push(card);
+          // Parents are emitted before children; walk to the parent container.
+          let parent = bucket.find(
+            (c) => c.locator?.card_index === loc.card_index
+              && !this._nestedPath(c.locator).length,
+          );
+          for (let i = 0; i < nest.length - 1; i++) {
+            const step = nest[i];
+            if (step === "card") {
+              parent = parent?.cards?.find?.((c) => true) || parent?.card;
+            } else {
+              parent = parent?.cards?.[step];
+            }
+          }
+          if (parent) {
+            if (!parent.cards) parent.cards = [];
+            parent.cards.push(card);
+          } else {
+            bucket.push(card);
+          }
         }
       }
     }
