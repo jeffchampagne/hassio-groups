@@ -929,6 +929,33 @@ class VizGroupsPanel extends LitElement {
     this.requestUpdate();
   }
 
+
+  /** Prefer HA friendly_name when a label looks like domain.object_id. */
+  _looksLikeEntityId(text = "") {
+    const raw = String(text || "").trim();
+    if (!raw || raw.includes(" ") || (raw.match(/\./g) || []).length !== 1) return false;
+    const [domain, objectId] = raw.split(".");
+    return !!(domain && objectId && /^[a-z0-9_]+$/i.test(domain) && /^[a-z0-9_]+$/i.test(objectId));
+  }
+
+  _entityFriendlyName(entityId) {
+    const state = this.hass?.states?.[entityId];
+    const name = state?.attributes?.friendly_name;
+    return (typeof name === "string" && name.trim()) ? name.trim() : "";
+  }
+
+  _displayLabel(text = "") {
+    const raw = String(text || "").trim();
+    if (!raw) return raw;
+    if (raw.includes(" › ")) {
+      return raw.split(" › ").map((part) => this._displayLabel(part)).join(" › ");
+    }
+    if (this._looksLikeEntityId(raw)) {
+      return this._entityFriendlyName(raw) || raw;
+    }
+    return raw;
+  }
+
   /** Dashboard title from WS list_dashboards payload; fall back to url_path. */
   _dashboardTitle(urlPath) {
     const path = urlPath || "lovelace";
@@ -1658,21 +1685,21 @@ class VizGroupsPanel extends LitElement {
       dashboard_url_path: dashboard,
       include: [],
       exclude: [],
-      label: row.label || "",
-      breadcrumb: row.breadcrumb || "",
+      label: this._displayLabel(row.label || ""),
+      breadcrumb: this._displayLabel(row.breadcrumb || ""),
       locator: this._normalizeLocator(loc),
       merge_mode: "ensure_user_branch",
       fingerprint: row.fingerprint || "",
     };
     this._resetNodeBrowser();
-    const title = row.label || this._locatorSummary(
+    const title = this._displayLabel(row.label || "") || this._locatorSummary(
       this._bindingDraft.locator,
       this._bindingDraft.fingerprint,
       "",
     );
     this._selectedNodeLabel = title;
     const bits = [];
-    if (row.breadcrumb && row.breadcrumb !== title) bits.push(row.breadcrumb);
+    if (row.breadcrumb && this._displayLabel(row.breadcrumb) !== title) bits.push(this._displayLabel(row.breadcrumb));
     else {
       const summary = this._locatorSummary(
         this._bindingDraft.locator,
@@ -1707,21 +1734,21 @@ class VizGroupsPanel extends LitElement {
       dashboard_url_path: binding.dashboard_url_path || "lovelace",
       include: [...(binding.expression?.include || [])],
       exclude: [...(binding.expression?.exclude || [])],
-      label: binding.label || "",
-      breadcrumb: binding.breadcrumb || "",
+      label: this._displayLabel(binding.label || ""),
+      breadcrumb: this._displayLabel(binding.breadcrumb || ""),
       locator: this._normalizeLocator(loc),
       merge_mode: binding.merge_mode || "ensure_user_branch",
       fingerprint: binding.fingerprint || "",
     };
     this._resetNodeBrowser();
-    const editTitle = binding.label || this._locatorSummary(
+    const editTitle = this._displayLabel(binding.label || "") || this._locatorSummary(
       this._bindingDraft.locator,
       this._bindingDraft.fingerprint,
       "",
     );
     this._selectedNodeLabel = editTitle;
     const editBits = [];
-    const crumb = binding.breadcrumb || "";
+    const crumb = this._displayLabel(binding.breadcrumb || "");
     if (crumb && crumb !== editTitle) editBits.push(crumb);
     else {
       const summary = this._locatorSummary(this._bindingDraft.locator, this._bindingDraft.fingerprint, "");
@@ -2164,7 +2191,7 @@ class VizGroupsPanel extends LitElement {
       @click=${(e) => { e.stopPropagation(); this._selectNode(card); }}>
       <ha-icon .icon=${card.icon || "mdi:card"}></ha-icon>
       <div>
-        <strong>${card.label}</strong>
+        <strong>${this._displayLabel(card.label)}</strong>
         ${card.snippet ? html`<span class="snip">${card.snippet}</span>` : nothing}
         <span class="meta">${card.type || "card"}${card.has_visibility ? " · visibility" : ""}</span>
       </div>
@@ -2432,9 +2459,9 @@ class VizGroupsPanel extends LitElement {
                             }}>
                             <span class="audit-chevron ${open ? "open" : ""}" aria-hidden="true"></span>
                             <span class="audit-toggle-label">
-                              <strong>${row.label || "Untitled"}</strong>
-                              ${row.breadcrumb && row.breadcrumb !== row.label
-                                ? html`<div style="font-size:0.8rem;color:var(--hg-text-secondary)">${row.breadcrumb}</div>`
+                              <strong>${this._displayLabel(row.label || "Untitled")}</strong>
+                              ${row.breadcrumb && this._displayLabel(row.breadcrumb) !== this._displayLabel(row.label || "")
+                                ? html`<div style="font-size:0.8rem;color:var(--hg-text-secondary)">${this._displayLabel(row.breadcrumb)}</div>`
                                 : nothing}
                             </span>
                           </button>
@@ -2526,11 +2553,12 @@ class VizGroupsPanel extends LitElement {
               ? html`<tr><td colspan="6">No visibility rules yet.</td></tr>`
               : this._bindings.map(
                   (b) => {
-                    const label = b.label || b.id;
-                    const crumb =
+                    const label = this._displayLabel(b.label || b.id);
+                    const crumb = this._displayLabel(
                       b.breadcrumb ||
                       this._locatorSummary(b.locator, b.fingerprint, "") ||
-                      "";
+                      ""
+                    );
                     return html`<tr class="row-click" @click=${() => this._openEditBinding(b)}>
                     <td>
                       <strong>${label}</strong>

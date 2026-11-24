@@ -146,8 +146,71 @@ def _disk_binding_breadcrumbs(hass: HomeAssistant) -> dict[str, str]:
         return {}
 
 
+def _looks_like_entity_id(text: str) -> bool:
+    """True for ``domain.object_id`` style ids (no spaces)."""
+    raw = (text or "").strip()
+    if not raw or " " in raw or raw.count(".") != 1:
+        return False
+    domain, object_id = raw.split(".", 1)
+    if not domain or not object_id:
+        return False
+    return domain.replace("_", "").isalnum() and all(
+        ch.isalnum() or ch == "_" for ch in object_id
+    )
+
+
+def _entity_friendly_name(hass: HomeAssistant, entity_id: str) -> str | None:
+    """Return HA friendly_name for an entity_id when available."""
+    state = hass.states.get(entity_id)
+    if state is not None:
+        name = state.attributes.get("friendly_name")
+        if isinstance(name, str) and name.strip():
+            return name.strip()
+    try:
+        from homeassistant.helpers import entity_registry as er
+
+        reg = er.async_get(hass)
+        entry = reg.async_get(entity_id)
+        if entry is not None:
+            for candidate in (entry.name, entry.original_name):
+                if isinstance(candidate, str) and candidate.strip():
+                    return candidate.strip()
+    except Exception:  # noqa: BLE001
+        pass
+    return None
+
+
+def _resolve_display_text(hass: HomeAssistant, text: str) -> str:
+    """Prefer friendly names when ``text`` (or breadcrumb segments) are entity ids."""
+    raw = (text or "").strip()
+    if not raw:
+        return raw
+    if " › " in raw:
+        parts = [
+            _resolve_display_text(hass, part) for part in raw.split(" › ")
+        ]
+        return " › ".join(parts)
+    if _looks_like_entity_id(raw):
+        friendly = _entity_friendly_name(hass, raw)
+        if friendly:
+            return friendly
+    return raw
+
+
+def _enrich_label_fields(hass: HomeAssistant, payload: dict[str, Any]) -> dict[str, Any]:
+    """Resolve entity-id labels/breadcrumbs in a node/audit/binding dict."""
+    if not isinstance(payload, dict):
+        return payload
+    for key in ("label", "breadcrumb", "snippet", "binding_label"):
+        if key in payload and isinstance(payload[key], str) and payload[key]:
+            payload[key] = _resolve_display_text(hass, payload[key])
+    return payload
+
+
 def _binding_to_dict(
-    binding: Any, disk_crumbs: dict[str, str] | None = None
+    binding: Any,
+    disk_crumbs: dict[str, str] | None = None,
+    hass: HomeAssistant | None = None,
 ) -> dict[str, Any]:
     """Serialize a binding, always including breadcrumb (soft-reload safe)."""
     data = binding.to_dict()
@@ -156,10 +219,22 @@ def _binding_to_dict(
     ).strip()
     if not crumb and disk_crumbs:
         crumb = disk_crumbs.get(str(data.get("id") or getattr(binding, "id", "")), "")
+    label = str(getattr(binding, "label", None) or data.get("label") or "").strip()
+    if hass is not None:
+        label = _resolve_display_text(hass, label)
+        crumb = _resolve_display_text(hass, crumb)
+    data["label"] = label
     data["breadcrumb"] = crumb
     if crumb:
         try:
             binding.breadcrumb = crumb
+        except Exception:  # noqa: BLE001
+            pass
+    if label and hass is not None:
+        try:
+            # Persist friendly name when the stored label was a raw entity_id.
+            if _looks_like_entity_id(str(getattr(binding, "label", "") or "")):
+                binding.label = label
         except Exception:  # noqa: BLE001
             pass
     return data
@@ -175,6 +250,21 @@ async def _async_backfill_binding_breadcrumbs(runtime: Any) -> bool:
         by_dash.setdefault(path, []).append(binding)
 
     changed = False
+    hass = runtime.hass
+
+    # Always resolve entity-id labels / breadcrumb segments to friendly names.
+    for binding in runtime.store.bindings.values():
+        current_label = str(getattr(binding, "label", "") or "")
+        resolved_label = _resolve_display_text(hass, current_label)
+        if resolved_label and resolved_label != current_label:
+            binding.label = resolved_label
+            changed = True
+        current_crumb = str(getattr(binding, "breadcrumb", "") or "")
+        resolved_crumb = _resolve_display_text(hass, current_crumb)
+        if resolved_crumb and resolved_crumb != current_crumb:
+            binding.breadcrumb = resolved_crumb
+            changed = True
+
     for path, bindings in by_dash.items():
         url_key: str | None = None if path in ("lovelace", "default") else path
         try:
@@ -186,10 +276,24 @@ async def _async_backfill_binding_breadcrumbs(runtime: Any) -> bool:
             for node in nodes:
                 if not locators_match(binding.locator, node.get("locator")):
                     continue
-                crumb = str(node.get("breadcrumb") or "")
+                crumb = _resolve_display_text(
+                    hass, str(node.get("breadcrumb") or "")
+                )
                 if crumb and getattr(binding, "breadcrumb", "") != crumb:
                     binding.breadcrumb = crumb
                     changed = True
+                node_label = _resolve_display_text(
+                    hass, str(node.get("label") or "")
+                )
+                current_label = str(getattr(binding, "label", "") or "")
+                if node_label and (
+                    not current_label
+                    or _looks_like_entity_id(current_label)
+                    or current_label == str(node.get("label") or "")
+                ):
+                    if current_label != node_label:
+                        binding.label = node_label
+                        changed = True
                 break
     if changed:
         await runtime.store.async_save()
@@ -235,7 +339,7 @@ def panel_snapshot(hass: HomeAssistant) -> dict[str, Any]:
 
     disk_crumbs = _disk_binding_breadcrumbs(hass)
     bindings = [
-        _binding_to_dict(b, disk_crumbs) for b in runtime.store.bindings.values()
+        _binding_to_dict(b, disk_crumbs, hass) for b in runtime.store.bindings.values()
     ]
     bindings.sort(
         key=lambda b: (b.get("dashboard_url_path") or "", b.get("label") or b["id"])
@@ -520,11 +624,27 @@ async def ws_dashboard_nodes(
     except Exception as err:  # noqa: BLE001
         connection.send_error(msg["id"], "dashboard_error", str(err))
         return
+    nodes = list_visibility_nodes(config)
+    tree = build_dashboard_preview_tree(config)
+
+    def _walk_tree(items: list[Any]) -> None:
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            _enrich_label_fields(hass, item)
+            for key in ("cards", "sections", "children"):
+                kids = item.get(key)
+                if isinstance(kids, list):
+                    _walk_tree(kids)
+
+    for node in nodes:
+        _enrich_label_fields(hass, node)
+    _walk_tree(tree)
     connection.send_result(
         msg["id"],
         {
-            "nodes": list_visibility_nodes(config),
-            "tree": build_dashboard_preview_tree(config),
+            "nodes": nodes,
+            "tree": tree,
             "dashboard_url_path": path,
         },
     )
@@ -557,6 +677,9 @@ async def ws_visibility_audit(
         dashboard_url_path=path,
         bindings=list(runtime.store.bindings.values()),
     )
+    for row in report.get("elements") or []:
+        if isinstance(row, dict):
+            _enrich_label_fields(hass, row)
     connection.send_result(msg["id"], report)
 
 
