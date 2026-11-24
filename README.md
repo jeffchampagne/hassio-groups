@@ -3,6 +3,7 @@
 **Viz Groups** is a Home Assistant custom integration for first-class **user groups**: manage membership in an admin panel, bind any visibility-capable Lovelace element to include/exclude groups, and expose membership for automations and templates.
 
 - **Domain:** `vizgroups`
+- **GitHub:** [`jeffchampagne/hassio-vizgroups`](https://github.com/jeffchampagne/hassio-vizgroups)
 - **Panel:** sidebar **Viz Groups** at `/vizgroups` (Lit web component `vizgroups-panel`, admin-only)
 - **Storage:** Home Assistant `.storage/vizgroups` (covered by built-in HA Backup)
 - **Sensors:** `sensor.vizgroups_<group_id>` per group
@@ -25,8 +26,11 @@ Copy `custom_components/vizgroups` into your HA `custom_components/` folder, res
 
 1. Add the **Viz Groups** integration (single instance).
 2. Open the **Viz Groups** sidebar panel (admins only).
-3. Create groups and assign members (friendly names primary; user IDs shown as subtitles on detail rows).
-4. Create visibility bindings (dashboard + locator + include/exclude groups) from **Conditionals**, or use the visual locator.
+3. Create groups and assign members:
+   - Friendly names are primary; user IDs appear as subtitles on detail rows.
+   - Membership **auto-saves** on add/remove for existing groups (name/description/icon still use Save).
+   - Group icon browser loads Home Assistant’s full MDI set from `/static/mdi/iconList.json` (same catalog as `ha-icon-picker`) — search by name or keywords (e.g. `thermometer`). Falls back to a curated list if the catalog cannot load.
+4. Manage visibility bindings from **Manage visibility** (table + visual picker) or list bindings under **Conditionals**.
 5. Sync runs automatically when membership or bindings change; use **Sync now** / dry-run from the panel when needed.
 
 Options (integration → Configure):
@@ -39,6 +43,34 @@ Options (integration → Configure):
 
 YAML-mode dashboards are supported when a writable YAML path can be resolved; otherwise sync reports an error for that dashboard.
 
+## Panel
+
+### Groups
+
+Create/edit groups, members, and icons. Group IDs are auto-generated and read-only after create (shown under Advanced).
+
+### Manage visibility
+
+- Table of bindings with **friendly names** (entity friendly names, mushroom `primary`/`secondary`, section/card headings — not raw `entity_id` / card type alone).
+- Element **breadcrumb** under the label (view › section › …).
+- **Visual picker:** choose dashboard → rendered preview → click the element. Toolbar sits under **Selected target**. Include groups first; exclude is optional/secondary; locator tech fields under Advanced.
+- **Sync now** from this view.
+
+### Conditionals
+
+Lists bindings and points at group membership sensors for templates / automations.
+
+### Visibility Audit + Convert
+
+Pick a dashboard (including **Overview**, loaded from `.storage/lovelace.lovelace` on modern HA when Overview is taken control). Scans people-visibility gates — including nested expander / stack / grid / conditional cards — and classifies each row:
+
+| Source | Meaning |
+|---|---|
+| **Viz Groups** | Matched to a binding managed by this integration |
+| **Manual Dashboard Config** | People visibility present without a matching binding |
+
+For Manual Dashboard Config rows, **Convert** creates a Viz Groups binding (preserving `nested_path` for nested cards) and refreshes the audit afterward.
+
 ## Visibility sync (fail-closed)
 
 Effective users for a binding:
@@ -48,13 +80,16 @@ Effective users for a binding:
 3. Dedupe + stable sort.
 4. Write `{"condition":"user","users":[...]}` — including `users: []` when empty so the element stays hidden.
 
-Mixed trees (e.g. `or` of `state` + `user`) keep non-user siblings; only the managed `condition: user` leaf is updated.
+### Conditionals & OR trees
+
+- Sync **rewrites existing** managed `condition: user` leaves inside `visibility` or conditional `conditions` trees (including nested `or` / `and`).
+- Non-user siblings (e.g. `state` conditions) are kept.
+- Sync does **not invent** new people-visibility on elements that have none.
+- For `type: conditional` cards, people gates live in `conditions`; sync updates those leaves and does not invent a sibling `visibility` block.
 
 Lab / example Lovelace url_path key: `vizgroups-lab` (hyphenated; domain remains `vizgroups`).
 
-## Conditionals & sensors
-
-The **Conditionals** panel view lists bindings and group membership sensors for template use.
+## Sensors
 
 Each group exposes `sensor.vizgroups_<group_id>`:
 
@@ -81,15 +116,6 @@ Non-membership:
    not in state_attr('sensor.vizgroups_teachers', 'members') }}
 ```
 
-## Visibility Audit
-
-The panel’s **Visibility Audit** scans a dashboard for elements that already have `condition: user` visibility and classifies each row as:
-
-- **Viz Groups** — matched to a binding managed by this integration
-- **manual dashboard config** — people visibility present without a matching binding
-
-Use it to find orphaned manual visibility, confirm sync coverage, and copy granted user IDs into the group editor.
-
 ## Services
 
 Domain prefix: `vizgroups.`
@@ -107,9 +133,10 @@ Websocket commands used by the panel follow the same domain (`vizgroups/subscrib
 
 ```bash
 python -m pytest tests/
+node --check custom_components/vizgroups/frontend/panel.js
 ```
 
-Pure sync / locator / membership logic is unit-tested without a live Home Assistant instance. Panel JS can be syntax-checked with `node --check custom_components/vizgroups/frontend/panel.js`.
+Pure sync / locator / membership logic is unit-tested without a live Home Assistant instance.
 
 ## License
 
