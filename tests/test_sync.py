@@ -5,8 +5,12 @@ from __future__ import annotations
 from vizgroups.const import MERGE_ENSURE_USER_BRANCH, MERGE_REPLACE_USER
 from vizgroups.models import Locator
 from vizgroups.sync import (
+    _card_preview,
+    _node_label,
     apply_binding_to_config,
     apply_visibility_users,
+    audit_dashboard_user_visibility,
+    build_dashboard_preview_tree,
     fingerprint_node,
     list_visibility_nodes,
     make_user_condition,
@@ -214,3 +218,152 @@ def test_replace_mode_keeps_non_user_top_level() -> None:
     assert not any(
         c.get("condition") == "user" and c.get("users") == ["a"] for c in out
     )
+
+
+def test_node_label_prefers_mushroom_primary() -> None:
+    card = {
+        "type": "custom:mushroom-template-card",
+        "primary": "Johns Apartment",
+        "secondary": "Door locked",
+        "icon": "mdi:home",
+    }
+    assert _node_label(card, fallback="Card 0") == "Johns Apartment"
+
+
+def test_node_label_mushroom_secondary_when_no_primary() -> None:
+    card = {
+        "type": "custom:mushroom-template-card",
+        "secondary": "Only secondary",
+    }
+    assert _node_label(card, fallback="Card 1") == "Only secondary"
+
+
+def test_node_label_field_priority_over_type() -> None:
+    """primary > secondary > label > name > title > heading; never type."""
+    assert (
+        _node_label(
+            {
+                "type": "custom:mushroom-template-card",
+                "primary": "P",
+                "secondary": "S",
+                "label": "L",
+                "name": "N",
+                "title": "T",
+                "heading": "H",
+            },
+            fallback="Card",
+        )
+        == "P"
+    )
+    assert (
+        _node_label(
+            {
+                "type": "custom:mushroom-template-card",
+                "secondary": "S",
+                "title": "T",
+            },
+            fallback="Card",
+        )
+        == "S"
+    )
+    assert _node_label({"type": "heading", "heading": "Welcome"}, fallback="Card") == "Welcome"
+    assert (
+        _node_label({"type": "custom:mushroom-template-card"}, fallback="Card 2")
+        == "Card 2"
+    )
+
+
+def test_card_preview_mushroom_not_type_string() -> None:
+    preview = _card_preview(
+        {
+            "type": "custom:mushroom-template-card",
+            "primary": "Johns Apartment",
+            "secondary": "Locked",
+            "icon": "mdi:home",
+        }
+    )
+    assert preview["label"] == "Johns Apartment"
+    assert preview["snippet"] == "Locked"
+    assert preview["type"] == "custom:mushroom-template-card"
+    assert "mushroom-template-card" not in preview["label"]
+
+
+def test_list_visibility_nodes_mushroom_primary_label() -> None:
+    cfg = {
+        "views": [
+            {
+                "title": "Home",
+                "path": "home",
+                "sections": [
+                    {
+                        "title": "People",
+                        "cards": [
+                            {
+                                "type": "custom:mushroom-template-card",
+                                "primary": "Johns Apartment",
+                                "secondary": "{{ states('lock.door') }}",
+                                "visibility": [
+                                    {"condition": "user", "users": ["u1"]}
+                                ],
+                            }
+                        ],
+                    }
+                ],
+            }
+        ]
+    }
+    nodes = list_visibility_nodes(cfg)
+    cards = [n for n in nodes if n["kind"] == "card"]
+    assert any(n["label"] == "Johns Apartment" for n in cards)
+    assert not any("mushroom-template-card" in (n["label"] or "") for n in cards)
+
+
+def test_preview_tree_mushroom_primary_label() -> None:
+    cfg = {
+        "views": [
+            {
+                "title": "Home",
+                "path": "home",
+                "cards": [
+                    {
+                        "type": "custom:mushroom-template-card",
+                        "primary": "Johns Apartment",
+                    }
+                ],
+            }
+        ]
+    }
+    tree = build_dashboard_preview_tree(cfg)
+    cards = tree[0]["cards"]
+    assert cards[0]["label"] == "Johns Apartment"
+
+
+def test_audit_uses_mushroom_primary_not_type() -> None:
+    cfg = {
+        "views": [
+            {
+                "title": "Home",
+                "path": "home",
+                "sections": [
+                    {
+                        "title": "People",
+                        "cards": [
+                            {
+                                "type": "custom:mushroom-template-card",
+                                "primary": "Johns Apartment",
+                                "visibility": [
+                                    {"condition": "user", "users": ["u1"]}
+                                ],
+                            }
+                        ],
+                    }
+                ],
+            }
+        ]
+    }
+    audit = audit_dashboard_user_visibility(
+        cfg, dashboard_url_path="lovelace", bindings=[]
+    )
+    assert audit["summary"]["with_user_visibility"] == 1
+    assert audit["elements"][0]["label"] == "Johns Apartment"
+    assert "mushroom" not in audit["elements"][0]["label"].lower()

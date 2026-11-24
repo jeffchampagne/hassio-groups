@@ -197,12 +197,24 @@ def apply_binding_to_config(
     return working, "ok"
 
 
+def _human_label_value(val: Any) -> str | None:
+    """Return a stripped human-readable string, or None if missing/blank."""
+    if isinstance(val, str) and val.strip():
+        return val.strip()
+    return None
+
+
 def _node_label(node: dict[str, Any], *, fallback: str) -> str:
-    """Human-readable label: title/heading/name — never fall back to card type as the name."""
-    for key in ("title", "heading", "name"):
-        val = node.get(key)
-        if isinstance(val, str) and val.strip():
-            return val.strip()
+    """Human-readable label — prefer mushroom/HA text fields over card type.
+
+    Field order: primary, secondary, label, name, title, heading (mushroom
+    template cards expose primary/secondary; stock cards use title/heading/name).
+    Never prefer type as the display name.
+    """
+    for key in ("primary", "secondary", "label", "name", "title", "heading"):
+        text = _human_label_value(node.get(key))
+        if text is not None:
+            return text
     # Markdown cards often use content as the visible title.
     if str(node.get("type") or "") == "markdown":
         content = node.get("content")
@@ -488,7 +500,7 @@ def audit_dashboard_user_visibility(
             continue
         users = collect_visibility_user_ids(visibility)
         elem_type = _audit_element_type(node.get("kind"), node, resolved)
-        # Prefer real title from resolved Lovelace node (heading/title/name).
+        # Prefer real title from resolved Lovelace node (mushroom primary, title, …).
         label = _node_label(
             resolved,
             fallback=str(node.get("label") or node.get("kind") or "Untitled"),
@@ -562,7 +574,10 @@ def audit_dashboard_user_visibility(
 def _card_preview(card: dict[str, Any]) -> dict[str, Any]:
     """Compact fields for visual preview tiles."""
     ntype = str(card.get("type") or "card")
-    label = _node_label(card, fallback=ntype)
+    # Never use card type as the display name (mushroom → custom:mushroom-…).
+    label = _node_label(card, fallback="Card")
+    if label.strip().lower() == ntype.strip().lower():
+        label = "Card"
     snippet = ""
     if ntype == "heading":
         snippet = str(card.get("heading") or label)
@@ -575,6 +590,16 @@ def _card_preview(card: dict[str, Any]) -> dict[str, Any]:
             if line:
                 snippet = line[:120]
                 break
+    elif _human_label_value(card.get("primary")) or _human_label_value(card.get("secondary")):
+        # Mushroom template / chips: show secondary under primary when both exist.
+        primary = _human_label_value(card.get("primary"))
+        secondary = _human_label_value(card.get("secondary"))
+        if primary and secondary and label == primary:
+            snippet = secondary
+        elif secondary and label != secondary:
+            snippet = secondary
+        elif primary and label != primary:
+            snippet = primary
     elif isinstance(card.get("entity"), str):
         snippet = card["entity"]
     elif isinstance(card.get("entities"), list) and card["entities"]:
