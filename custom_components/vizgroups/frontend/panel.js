@@ -2583,7 +2583,7 @@ class VizGroupsPanel extends LitElement {
               </button>
             </div>
             <span class="hint" style="display:block;margin-top:8px">${editing
-              ? "Click to add — membership saves immediately. Detail fields still use Save."
+              ? "Click to add — membership saves immediately."
               : "Click to add a user or nested group. Paste selects user IDs from Visibility audit."}</span>
           </div>
           <div class="user-picker panel-col-body">
