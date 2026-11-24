@@ -8,6 +8,7 @@
  * Live hotfix 2026-11-24: member autosave + picker under selected target + table friendly names.
  * Live 2026-11-24: Convert audit Manual Dashboard Config → Viz Groups (PR #10 + normalizeLocator).
  * Live 2026-11-24: Manage visibility breadcrumbs (PR #13).
+ * Live 2026-11-24: Sortable table headers show affordance on all columns (sort2).
  */
 import {
   LitElement,
@@ -406,6 +407,9 @@ class VizGroupsPanel extends LitElement {
     th.sortable .sort-ind {
       display: inline-block; margin-left: 6px; font-size: 0.85em;
       opacity: 0.85; text-transform: none; letter-spacing: 0;
+    }
+    th.sortable:not(.sorted) .sort-ind {
+      opacity: 0.4;
     }
     td { padding: 14px 16px; border-bottom: 1px solid var(--hg-divider); vertical-align: middle; }
     tr:last-child td { border-bottom: 0; }
@@ -1151,16 +1155,25 @@ class VizGroupsPanel extends LitElement {
     const aria = active
       ? (sort.dir === "asc" ? "ascending" : "descending")
       : "none";
+    // Always show an indicator so every sortable header matches Element
+    // (inactive columns use a muted ↕; active uses ↑/↓).
+    const ind = active ? (sort.dir === "asc" ? "↑" : "↓") : "↕";
     return html`
       <th
         class="sortable ${active ? "sorted" : ""}"
         aria-sort=${aria}
+        title="Click to sort"
         @click=${() => this._toggleTableSort(tableKey, col)}
+        @keydown=${(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            this._toggleTableSort(tableKey, col);
+          }
+        }}
+        tabindex="0"
       >
         <span class="sort-label">${label}</span>
-        ${active
-          ? html`<span class="sort-ind" aria-hidden="true">${sort.dir === "asc" ? "↑" : "↓"}</span>`
-          : nothing}
+        <span class="sort-ind" aria-hidden="true">${ind}</span>
       </th>
     `;
   }
@@ -1202,13 +1215,21 @@ class VizGroupsPanel extends LitElement {
   _sortedBindings() {
     const { col, dir } = this._bindingsSort || { col: "element", dir: "asc" };
     const rows = [...this._bindings];
-    rows.sort((a, b) =>
-      this._compareSortValues(
+    rows.sort((a, b) => {
+      const primary = this._compareSortValues(
         this._bindingSortValue(a, col),
         this._bindingSortValue(b, col),
         dir
-      )
-    );
+      );
+      if (primary !== 0) return primary;
+      // Stable tie-break by element label so Status/Dashboard clicks still
+      // visibly reorder when many rows share the same primary value.
+      return this._compareSortValues(
+        this._bindingSortValue(a, "element"),
+        this._bindingSortValue(b, "element"),
+        "asc"
+      );
+    });
     return rows;
   }
 
@@ -1223,13 +1244,19 @@ class VizGroupsPanel extends LitElement {
   _sortedAuditRows(rows) {
     const { col, dir } = this._auditSort || { col: "element", dir: "asc" };
     const sorted = [...(rows || [])];
-    sorted.sort((a, b) =>
-      this._compareSortValues(
+    sorted.sort((a, b) => {
+      const primary = this._compareSortValues(
         this._auditSortValue(a, col),
         this._auditSortValue(b, col),
         dir
-      )
-    );
+      );
+      if (primary !== 0) return primary;
+      return this._compareSortValues(
+        this._auditSortValue(a, "element"),
+        this._auditSortValue(b, "element"),
+        "asc"
+      );
+    });
     return sorted;
   }
 
