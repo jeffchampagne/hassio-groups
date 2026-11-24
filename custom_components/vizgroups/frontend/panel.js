@@ -2061,30 +2061,28 @@ class VizGroupsPanel extends LitElement {
                   : nothing}
               </div>`
             : html`<div class="hint">Open the visual picker and choose the dashboard, and then dashboard element you want to manage visibility for.</div>`}
+          <div class="toolbar" style="margin-top:14px">
+            <button class="btn btn-primary btn-sm" type="button" ?disabled=${this._busy}
+              @click=${() => this._openDashboardPicker()}>
+              ${this._pickerStep === "closed" ? "Open visual picker" : "Show dashboards"}
+            </button>
+            ${this._pickerStep !== "closed"
+              ? html`<button class="btn btn-ghost btn-sm" type="button"
+                  @click=${() => (this._pickerStep = "closed")}>Hide picker</button>`
+              : nothing}
+            ${this._selectedNodeLabel && this._pickerStep !== "groups"
+              ? html`<button class="btn btn-ghost btn-sm" type="button"
+                  @click=${() => (this._pickerStep = "groups")}>Choose groups →</button>`
+              : nothing}
+          </div>
           ${!inGroupsStep
-            ? html`<div class="toolbar" style="margin-top:14px">
+            ? html`<div class="toolbar" style="margin-top:10px">
                 <button class="btn btn-ghost" @click=${() => { this._bindingDraft = null; this._resetNodeBrowser(); }}>Cancel</button>
               </div>`
             : nothing}
         </div>
         <div>
-          <div class="field"><label>Visual picker</label>
-            <div class="toolbar" style="margin:0 0 8px">
-              <button class="btn btn-primary btn-sm" type="button" ?disabled=${this._busy}
-                @click=${() => this._openDashboardPicker()}>
-                ${this._pickerStep === "closed" ? "Open visual picker" : "Show dashboards"}
-              </button>
-              ${this._pickerStep !== "closed"
-                ? html`<button class="btn btn-ghost btn-sm" type="button"
-                    @click=${() => (this._pickerStep = "closed")}>Hide picker</button>`
-                : nothing}
-              ${this._selectedNodeLabel && this._pickerStep !== "groups"
-                ? html`<button class="btn btn-ghost btn-sm" type="button"
-                    @click=${() => (this._pickerStep = "groups")}>Choose groups →</button>`
-                : nothing}
-            </div>
-            ${this._renderLocatorPicker()}
-          </div>
+          ${this._renderLocatorPicker()}
         </div>
       </div>
     </div>`;
