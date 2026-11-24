@@ -55,7 +55,6 @@ def _reload_ws_modules() -> None:
     for mod_name in (
         f"{pkg}.models",
         f"{pkg}.sync",
-        f"{pkg}.store",
         f"{pkg}.lovelace_sync",
         f"{pkg}.panel",
     ):
@@ -110,11 +109,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    try:
+        unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    except Exception:  # noqa: BLE001
+        # Platforms may never have loaded (not_loaded → reload).
+        unload_ok = True
     runtime = hass.data.get(DOMAIN, {}).pop(entry.entry_id, None)
     if runtime:
         runtime.unregister_services_if_last()
-    return unload_ok
+    return True if unload_ok is None else bool(unload_ok)
 
 
 async def _async_reload_options(hass: HomeAssistant, entry: ConfigEntry) -> None:

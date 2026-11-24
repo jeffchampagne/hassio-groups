@@ -60,31 +60,18 @@ class _NoRuntime(RuntimeError):
 
 
 async def async_register_panel(hass: HomeAssistant) -> None:
-    """Serve the Lit panel module and (re)add the sidebar entry.
-
-    Re-registers when ``PANEL_MODULE_URL`` changes so cache-bust query
-    strings (e.g. ``?v=crumb13``) take effect without a Core restart.
-    """
+    """Serve the Lit panel module and add the sidebar entry once."""
     bucket = hass.data.setdefault(DOMAIN, {})
-    frontend_dir = Path(__file__).parent / "frontend"
+    module = Path(__file__).parent / "frontend" / "panel.js"
     static_url = PANEL_MODULE_URL.split("?", 1)[0]
-    module_name = Path(static_url).name or "panel.js"
-    module = frontend_dir / module_name
-    if not module.is_file():
-        module = frontend_dir / "panel.js"
     await hass.http.async_register_static_paths(
         [StaticPathConfig(static_url, str(module), False)]
     )
-    prev = bucket.get("panel_module_url")
-    if bucket.get("panel") and prev == PANEL_MODULE_URL:
-        return
     if bucket.get("panel"):
-        try:
-            from homeassistant.components import frontend
-
-            frontend.async_remove_panel(hass, PANEL_PATH)
-        except Exception:  # noqa: BLE001
-            pass
+        # Update remembered module URL for cache-bust query changes; panel
+        # webcomponent stays registered (HA keeps the first module_url).
+        bucket["panel_module_url"] = PANEL_MODULE_URL
+        return
     await panel_custom.async_register_panel(
         hass,
         frontend_url_path=PANEL_PATH,
@@ -106,15 +93,7 @@ def async_register_websocket(hass: HomeAssistant) -> None:
     Callers should importlib.reload this module (and sync) before invoking so
     disk updates are picked up. Re-register replaces handlers by command type.
     """
-    import importlib
-
-    from . import lovelace_sync as lovelace_sync_mod
-    from . import models as models_mod
-
-    importlib.reload(models_mod)
-    importlib.reload(lovelace_sync_mod)
     _patch_binding_breadcrumb_serialization()
-
     bucket = hass.data.setdefault(DOMAIN, {})
     websocket_api.async_register_command(hass, ws_subscribe)
     websocket_api.async_register_command(hass, ws_list_users)
@@ -126,30 +105,8 @@ def async_register_websocket(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, ws_dashboard_nodes)
     websocket_api.async_register_command(hass, ws_visibility_audit)
     websocket_api.async_register_command(hass, ws_update_options)
-    # Soft-reload: migrate in-memory bindings onto reloaded Binding class, then
-    # swap sync engines so breadcrumb backfill from lovelace_sync persists.
-    engine_cls = lovelace_sync_mod.LovelaceSyncEngine
-    binding_cls = models_mod.Binding
-    for value in list(bucket.values()):
-        if not hasattr(value, "store") or not hasattr(value, "entry"):
-            continue
-        store = value.store
-        migrated = {}
-        for bid, binding in list(store.bindings.items()):
-            raw = binding.to_dict()
-            raw["breadcrumb"] = str(
-                getattr(binding, "breadcrumb", None) or raw.get("breadcrumb") or ""
-            )
-            migrated[bid] = binding_cls.from_dict(raw)
-        store.bindings = migrated
-        options = dict(value.entry.options) if value.entry else {}
-        value.sync_engine = engine_cls(
-            value.hass, value.store, options=options
-        )
     bucket["websocket"] = True
-    # Soft-reload path: old __init__ skips panel re-register; force cache-bust URL.
-    if bucket.get("panel_module_url") != PANEL_MODULE_URL:
-        hass.async_create_task(async_register_panel(hass))
+
 
 
 def _runtime(hass: HomeAssistant) -> Any:
