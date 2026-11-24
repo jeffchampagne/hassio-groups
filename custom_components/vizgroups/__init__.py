@@ -352,6 +352,7 @@ class GroupsRuntime:
                 merge_mode=call.data.get("merge_mode") or MERGE_ENSURE_USER_BRANCH,
                 fingerprint=call.data.get("fingerprint") or "",
                 label=call.data.get("label") or "",
+                breadcrumb=call.data.get("breadcrumb") or "",
             )
             await self.store.upsert_binding(binding)
             await self.async_maybe_autosync()
@@ -476,6 +477,7 @@ class GroupsRuntime:
                     vol.Optional("merge_mode"): vol.In(list(MERGE_MODES)),
                     vol.Optional("fingerprint"): cv.string,
                     vol.Optional("label"): cv.string,
+                    vol.Optional("breadcrumb"): cv.string,
                 }
             ),
             "unbind_element": vol.Schema({vol.Required("binding_id"): cv.string}),
