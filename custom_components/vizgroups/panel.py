@@ -103,11 +103,12 @@ def panel_snapshot(hass: HomeAssistant) -> dict[str, Any]:
         }
 
     users = runtime.list_users_for_panel()
+    users_by_id = {u["id"]: u for u in users}
     groups = []
     for group in runtime.store.groups.values():
         member_rows = []
         for uid in group.member_user_ids:
-            info = next((u for u in users if u["id"] == uid), None)
+            info = users_by_id.get(uid)
             member_rows.append(
                 {
                     "id": uid,
@@ -176,7 +177,12 @@ async def ws_list_users(
     connection: websocket_api.ActiveConnection,
     msg: dict[str, Any],
 ) -> None:
-    connection.send_result(msg["id"], panel_snapshot(hass).get("users", []))
+    try:
+        runtime = _runtime(hass)
+    except _NoRuntime:
+        connection.send_result(msg["id"], [])
+        return
+    connection.send_result(msg["id"], runtime.list_users_for_panel())
 
 
 @websocket_api.websocket_command(

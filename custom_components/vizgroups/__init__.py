@@ -46,7 +46,7 @@ CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 def _reload_ws_modules() -> None:
     """Reload panel/sync from disk so new websocket commands register without Core restart."""
-    pkg = __package__ or "custom_components.groups"
+    pkg = __package__ or "custom_components.vizgroups"
     # Reload dependency first, then panel (registers commands).
     for mod_name in (f"{pkg}.sync", f"{pkg}.panel"):
         mod = sys.modules.get(mod_name)
@@ -169,14 +169,17 @@ class GroupsRuntime:
         return list(result)
 
 
-    def list_users_for_panel(self) -> list[dict[str, Any]]:
-        """Friendly-name-first user rows for the admin UI."""
+    def _person_names_by_user(self) -> dict[str, str]:
         person_by_user: dict[str, str] = {}
         for state in self.hass.states.async_all("person"):
             uid = state.attributes.get("user_id")
             if isinstance(uid, str) and uid:
                 person_by_user[uid] = state.attributes.get("friendly_name") or state.name
+        return person_by_user
 
+    def list_users_for_panel(self) -> list[dict[str, Any]]:
+        """Friendly-name-first user rows for the admin UI."""
+        person_by_user = self._person_names_by_user()
         rows: list[dict[str, Any]] = []
         for user in self._get_users_sync():
             if user.system_generated:
@@ -197,7 +200,17 @@ class GroupsRuntime:
         return rows
 
     def display_names_for(self, user_ids: list[str]) -> list[str]:
-        lookup = {u["id"]: u["name"] for u in self.list_users_for_panel()}
+        """Resolve friendly names without building/sorting the full panel user list."""
+        if not user_ids:
+            return []
+        person_by_user = self._person_names_by_user()
+        lookup: dict[str, str] = {}
+        for user in self._get_users_sync():
+            if user.system_generated:
+                continue
+            lookup[user.id] = person_by_user.get(user.id) or user.name or user.id
+        for uid, name in person_by_user.items():
+            lookup.setdefault(uid, name)
         return [lookup.get(uid, uid) for uid in user_ids]
 
     async def async_prune_users(self) -> None:

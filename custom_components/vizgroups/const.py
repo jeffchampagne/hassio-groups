@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-DOMAIN = "groups"
+DOMAIN = "vizgroups"
 NAME = "Viz Groups"
 
 PLATFORMS: list[str] = ["sensor"]
@@ -33,8 +33,8 @@ ATTR_IS_MEMBER = "is_member"
 EVENT_SYNCED = f"{DOMAIN}_synced"
 EVENT_MEMBERSHIP_CHANGED = f"{DOMAIN}_membership_changed"
 
-PANEL_PATH = "groups"
-PANEL_ELEMENT = "groups-panel"
+PANEL_PATH = "vizgroups"
+PANEL_ELEMENT = "vizgroups-panel"
 PANEL_MODULE_URL = f"/{DOMAIN}/panel.js"
 PANEL_ICON = "mdi:account-group"
 

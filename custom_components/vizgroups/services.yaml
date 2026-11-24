@@ -166,6 +166,6 @@ debug_dashboard:
   fields:
     dashboard:
       name: Dashboard
-      example: groups-lab
+      example: vizgroups-lab
       selector:
         text:

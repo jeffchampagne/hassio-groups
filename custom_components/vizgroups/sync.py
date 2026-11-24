@@ -475,6 +475,9 @@ def audit_dashboard_user_visibility(
 
     rows: list[dict[str, Any]] = []
     for node in list_visibility_nodes(config):
+        # Skip nodes with no visibility block — avoids resolve + tree walk.
+        if not node.get("has_visibility"):
+            continue
         # Re-resolve to inspect visibility contents (list_visibility_nodes is metadata-only).
         loc = Locator.from_dict(node.get("locator") or {})
         resolved = resolve_locator(config, loc)

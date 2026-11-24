@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from groups.const import MERGE_ENSURE_USER_BRANCH, MERGE_REPLACE_USER
-from groups.models import Locator
-from groups.sync import (
+from vizgroups.const import MERGE_ENSURE_USER_BRANCH, MERGE_REPLACE_USER
+from vizgroups.models import Locator
+from vizgroups.sync import (
     apply_binding_to_config,
     apply_visibility_users,
     fingerprint_node,

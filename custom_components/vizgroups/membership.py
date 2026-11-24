@@ -46,4 +46,5 @@ def is_member(user_id: str, group_members: Iterable[str]) -> bool:
     """Return True if user_id is in the group member list."""
     if not user_id:
         return False
-    return user_id in set(normalize_user_ids(group_members))
+    needle = str(user_id).strip()
+    return any(str(uid).strip() == needle for uid in group_members if uid)

@@ -63,11 +63,18 @@ class LovelaceSyncEngine:
     def dashboard_allowlist(self) -> list[str]:
         return list(self.options.get(CONF_DASHBOARDS) or [])
 
-    def compute_users_for_binding(self, binding: Binding) -> list[str]:
+    def compute_users_for_binding(
+        self,
+        binding: Binding,
+        *,
+        members_by_group: dict[str, list[str]] | None = None,
+    ) -> list[str]:
         return effective_users(
             binding.expression.include,
             binding.expression.exclude,
-            self.store.members_by_group(),
+            members_by_group
+            if members_by_group is not None
+            else self.store.members_by_group(),
             normalize_duplicates=self.normalize_duplicates,
         )
 
@@ -167,7 +174,7 @@ class LovelaceSyncEngine:
                     if url in seen or stem in seen:
                         continue
                     seen.add(url)
-                    title = "Viz Groups Lab" if url == "groups-lab" else url.replace("-", " ").title()
+                    title = "Viz Groups Lab" if url == "vizgroups-lab" else url.replace("-", " ").title()
                     items.append(
                         {
                             "url_path": url,
@@ -460,6 +467,9 @@ class LovelaceSyncEngine:
                 continue
             by_dash.setdefault(path, []).append(binding)
 
+        # Membership map once per sync — bindings only read it.
+        members_by_group = self.store.members_by_group()
+
         for path, bindings in by_dash.items():
             url_key: str | None = None if path in ("lovelace", "default") else path
             try:
@@ -480,7 +490,9 @@ class LovelaceSyncEngine:
 
             dirty = False
             for binding in bindings:
-                users = self.compute_users_for_binding(binding)
+                users = self.compute_users_for_binding(
+                    binding, members_by_group=members_by_group
+                )
                 new_config, status = apply_binding_to_config(
                     config,
                     binding.locator,
@@ -495,14 +507,12 @@ class LovelaceSyncEngine:
                     "users": users,
                 }
                 if status == "stale":
+                    # Mutate in place; persisted with the single store save below.
                     binding.stale = True
-                    await self.store.upsert_binding(binding)
                 elif status == "ok" and new_config is not None:
                     config = new_config
                     dirty = True
-                    if binding.stale:
-                        binding.stale = False
-                        await self.store.upsert_binding(binding)
+                    binding.stale = False
                 results.append(entry)
 
             if dirty and not do_dry:
@@ -517,6 +527,7 @@ class LovelaceSyncEngine:
             dry_run_last=do_dry,
         )
         self.store.sync_meta = meta
+        # One store write for sync meta + any stale-flag flips (avoid per-binding I/O).
         await self.store.async_save()
 
         summary = {

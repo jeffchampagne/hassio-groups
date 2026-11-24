@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from groups.membership import effective_users, is_member, normalize_user_ids
+from vizgroups.membership import effective_users, is_member, normalize_user_ids
 
 
 def test_normalize_dedupes_and_sorts() -> None:

@@ -41,6 +41,8 @@ class GroupMembershipSensor(SensorEntity):
         self._attr_unique_id = f"{DOMAIN}_{group.id}"
         self._attr_name = group.name
         self._attr_native_value = len(group.member_user_ids)
+        # Deterministic entity_id: sensor.vizgroups_<group_id>
+        self.entity_id = f"sensor.{DOMAIN}_{group.id}"
 
     @property
     def group_id(self) -> str:
