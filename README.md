@@ -13,7 +13,8 @@
 ## Install (HACS custom repository)
 
 1. HACS → Integrations → ⋮ → **Custom repositories**
-2. Add `https://github.com/jeffchampagne/vizgroups` as category **Integration**
+2. Add `https://github.com/jeffchampagne/hassio-groups` as category **Integration**
+   (intended final repo name: `jeffchampagne/vizgroups` once GitHub rename is available)
 3. Install **Viz Groups**, then **restart** Home Assistant
 4. Settings → Devices & Services → **Add Integration** → **Viz Groups**
 
