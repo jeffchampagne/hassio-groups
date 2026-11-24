@@ -101,8 +101,16 @@ def resolve_locator(config: dict[str, Any], locator: Locator) -> dict[str, Any] 
 
 
 def make_user_condition(users: list[str]) -> dict[str, Any]:
-    """Build a condition:user leaf. Empty users is fail-closed."""
-    return {"condition": USER_CONDITION, "users": list(users)}
+    """Build a condition:user leaf. Empty users is fail-closed. Dedupes IDs."""
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for uid in users:
+        s = str(uid)
+        if not s or s in seen:
+            continue
+        seen.add(s)
+        ordered.append(s)
+    return {"condition": USER_CONDITION, "users": ordered}
 
 
 def _rewrite_user_leaves(node: Any, users: list[str], *, replaced: list[bool]) -> Any:
@@ -162,6 +170,33 @@ def apply_visibility_users(
     return [rewritten, user_leaf]
 
 
+def _strip_user_visibility_from_conditional(node: dict[str, Any]) -> bool:
+    """Remove invented ``visibility`` people gates on conditional cards.
+
+    Conditional cards already use ``conditions`` (often ``or``/``and`` trees with a
+    nested ``condition: user`` leaf). A sibling ``visibility`` block duplicates the
+    gate and confuses audit/sync — drop user-bearing visibility; keep any purely
+    non-user visibility conditions if present.
+    """
+    if str(node.get("type") or "") != "conditional":
+        return False
+    vis = node.get("visibility")
+    if not isinstance(vis, list) or not vis:
+        return False
+    if not visibility_has_user_condition(vis):
+        return False
+    kept: list[Any] = []
+    for item in vis:
+        if visibility_has_user_condition(item):
+            continue
+        kept.append(item)
+    if kept:
+        node["visibility"] = kept
+    else:
+        node.pop("visibility", None)
+    return True
+
+
 def apply_binding_to_config(
     config: dict[str, Any],
     locator: Locator,
@@ -186,23 +221,24 @@ def apply_binding_to_config(
         if current_fp and current_fp != expected_fingerprint:
             return None, "stale"
 
-    # Conditional cards gate on ``conditions`` (incl. or/and trees with a
-    # nested condition:user leaf). Everything else uses ``visibility``.
-    # Rewriting the existing user leaf avoids inventing a separate visibility
-    # array that HA ignores for type:conditional.
+    # Conditional cards: always rewrite ``conditions`` (including nested or/and
+    # user leaves). Never invent a sibling ``visibility`` people gate.
+    is_conditional = str(node.get("type") or "") == "conditional"
     gate_key = (
         "conditions"
-        if str(node.get("type") or "") == "conditional"
-        and isinstance(node.get("conditions"), list)
+        if is_conditional and isinstance(node.get("conditions"), list)
         else "visibility"
     )
-    before = deepcopy(node.get(gate_key))
+    before_gate = deepcopy(node.get(gate_key))
     node[gate_key] = apply_visibility_users(
         node.get(gate_key) if isinstance(node.get(gate_key), list) else node.get(gate_key),
         users,
         merge_mode=merge_mode,
     )
-    if node[gate_key] == before:
+    stripped = False
+    if is_conditional:
+        stripped = _strip_user_visibility_from_conditional(node)
+    if node[gate_key] == before_gate and not stripped:
         return working, "unchanged"
     return working, "ok"
 
@@ -231,6 +267,13 @@ def _node_label(node: dict[str, Any], *, fallback: str) -> str:
             return first.strip()
         if isinstance(first, dict) and first.get("entity"):
             return str(first.get("entity"))
+    # Conditional wrappers have no title — borrow from the inner card.
+    if str(node.get("type") or "") == "conditional":
+        wrapped = node.get("card")
+        if isinstance(wrapped, dict):
+            inner = _node_label(wrapped, fallback="")
+            if inner:
+                return inner
     # Do not use type as the display name (e.g. "heading") — keep type in its own field.
     return fallback
 
@@ -278,7 +321,7 @@ def list_visibility_nodes(config: dict[str, Any]) -> list[dict[str, Any]]:
                     "view_path": view_path,
                 },
                 "fingerprint": fingerprint_node(view),
-                "has_visibility": isinstance(view.get("visibility"), list),
+                "has_visibility": _has_user_gate(view),
             }
         )
         sections = view.get("sections")
@@ -301,7 +344,7 @@ def list_visibility_nodes(config: dict[str, Any]) -> list[dict[str, Any]]:
                             "section_index": s_idx,
                         },
                         "fingerprint": fingerprint_node(section),
-                        "has_visibility": isinstance(section.get("visibility"), list),
+                        "has_visibility": _has_user_gate(section),
                     }
                 )
                 cards = section.get("cards")
@@ -325,7 +368,7 @@ def list_visibility_nodes(config: dict[str, Any]) -> list[dict[str, Any]]:
                                     "card_index": c_idx,
                                 },
                                 "fingerprint": fingerprint_node(card),
-                                "has_visibility": isinstance(card.get("visibility"), list),
+                                "has_visibility": _has_user_gate(card),
                             }
                         )
         cards = view.get("cards")
@@ -348,7 +391,7 @@ def list_visibility_nodes(config: dict[str, Any]) -> list[dict[str, Any]]:
                             "card_index": c_idx,
                         },
                         "fingerprint": fingerprint_node(card),
-                        "has_visibility": isinstance(card.get("visibility"), list),
+                        "has_visibility": _has_user_gate(card),
                     }
                 )
     return results
@@ -363,6 +406,31 @@ def visibility_has_user_condition(visibility: Any) -> bool:
     if isinstance(visibility, list):
         return any(visibility_has_user_condition(item) for item in visibility)
     return False
+
+
+def _has_user_gate(node: dict[str, Any]) -> bool:
+    """True when the node has a visibility/conditions tree that may contain users."""
+    if isinstance(node.get("visibility"), list):
+        return True
+    return str(node.get("type") or "") == "conditional" and isinstance(
+        node.get("conditions"), list
+    )
+
+
+def _user_gate_tree(node: dict[str, Any]) -> Any:
+    """Return the condition tree that gates people visibility for this node."""
+    # Conditionals are gated by ``conditions``; prefer that even if a stale
+    # sibling ``visibility`` people block was invented by an older sync.
+    if str(node.get("type") or "") == "conditional":
+        conditions = node.get("conditions")
+        if isinstance(conditions, list) and (
+            visibility_has_user_condition(conditions) or conditions
+        ):
+            return conditions
+    visibility = node.get("visibility")
+    if visibility_has_user_condition(visibility):
+        return visibility
+    return visibility
 
 
 def collect_visibility_user_ids(visibility: Any) -> list[str]:
@@ -485,15 +553,15 @@ def audit_dashboard_user_visibility(
 
     rows: list[dict[str, Any]] = []
     for node in list_visibility_nodes(config):
-        # Skip nodes with no visibility block — avoids resolve + tree walk.
+        # Skip nodes with no visibility/conditions gate — avoids resolve + tree walk.
         if not node.get("has_visibility"):
             continue
-        # Re-resolve to inspect visibility contents (list_visibility_nodes is metadata-only).
+        # Re-resolve to inspect gate contents (list_visibility_nodes is metadata-only).
         loc = Locator.from_dict(node.get("locator") or {})
         resolved = resolve_locator(config, loc)
         if not isinstance(resolved, dict):
             continue
-        visibility = resolved.get("visibility")
+        visibility = _user_gate_tree(resolved)
         if not visibility_has_user_condition(visibility):
             continue
         users = collect_visibility_user_ids(visibility)
@@ -641,7 +709,7 @@ def build_dashboard_preview_tree(config: dict[str, Any]) -> list[dict[str, Any]]
                 "view_path": view_path,
             },
             "fingerprint": fingerprint_node(view),
-            "has_visibility": isinstance(view.get("visibility"), list),
+            "has_visibility": _has_user_gate(view),
             "sections": [],
             "cards": [],
         }
@@ -666,7 +734,7 @@ def build_dashboard_preview_tree(config: dict[str, Any]) -> list[dict[str, Any]]
                         "section_index": s_idx,
                     },
                     "fingerprint": fingerprint_node(section),
-                    "has_visibility": isinstance(section.get("visibility"), list),
+                    "has_visibility": _has_user_gate(section),
                     "cards": [],
                 }
                 cards = section.get("cards")
@@ -688,7 +756,7 @@ def build_dashboard_preview_tree(config: dict[str, Any]) -> list[dict[str, Any]]
                                     "card_index": c_idx,
                                 },
                                 "fingerprint": fingerprint_node(card),
-                                "has_visibility": isinstance(card.get("visibility"), list),
+                                "has_visibility": _has_user_gate(card),
                             }
                         )
                 view_node["sections"].append(section_node)
@@ -711,7 +779,7 @@ def build_dashboard_preview_tree(config: dict[str, Any]) -> list[dict[str, Any]]
                             "card_index": c_idx,
                         },
                         "fingerprint": fingerprint_node(card),
-                        "has_visibility": isinstance(card.get("visibility"), list),
+                        "has_visibility": _has_user_gate(card),
                     }
                 )
         tree.append(view_node)

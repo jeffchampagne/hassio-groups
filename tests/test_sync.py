@@ -7,6 +7,8 @@ from vizgroups.models import Locator
 from vizgroups.sync import (
     apply_binding_to_config,
     apply_visibility_users,
+    audit_dashboard_user_visibility,
+    collect_visibility_user_ids,
     fingerprint_node,
     list_visibility_nodes,
     make_user_condition,
@@ -219,8 +221,9 @@ def test_replace_mode_keeps_non_user_top_level() -> None:
 def test_conditional_or_state_user_rewrites_conditions_not_visibility() -> None:
     """Building Mode Closed: type:conditional with or(state, user) in conditions.
 
-    Sync must rewrite the nested condition:user leaf and must not invent a
-    sibling visibility array (HA ignores visibility on conditional cards).
+    Sync must rewrite the nested condition:user leaf, strip a sibling
+    visibility people gate (older sync artifact), and audit must read
+    conditions first (not a stale visibility block).
     """
     cfg = {
         "views": [
@@ -249,6 +252,10 @@ def test_conditional_or_state_user_rewrites_conditions_not_visibility() -> None:
                                         ],
                                     }
                                 ],
+                                # Bug artifact: older sync invented visibility.
+                                "visibility": [
+                                    {"condition": "user", "users": ["owner", "owner"]}
+                                ],
                                 "card": {
                                     "type": "custom:button-card",
                                     "name": "Closed",
@@ -262,7 +269,14 @@ def test_conditional_or_state_user_rewrites_conditions_not_visibility() -> None:
         ]
     }
     loc = Locator(kind="card", view_index=0, section_index=0, card_index=0)
-    new_cfg, status = apply_binding_to_config(cfg, loc, ["u1", "u2"])
+    # Before sync, audit already prefers conditions over invented visibility.
+    pre = audit_dashboard_user_visibility(
+        cfg, dashboard_url_path="lovelace", bindings=[]
+    )
+    pre_row = next(e for e in pre["elements"] if e["label"] == "Closed")
+    assert pre_row["lovelace_users"] == ["owner"]
+
+    new_cfg, status = apply_binding_to_config(cfg, loc, ["u1", "u2", "u1"])
     assert status == "ok"
     assert new_cfg is not None
     node = resolve_locator(new_cfg, loc)
@@ -276,12 +290,32 @@ def test_conditional_or_state_user_rewrites_conditions_not_visibility() -> None:
     }
     assert node["conditions"][0]["conditions"][1] == {
         "condition": "user",
-        "users": ["u1", "u2"],
+        "users": ["u1", "u2"],  # deduped
     }
+    assert collect_visibility_user_ids(node["conditions"]) == ["u1", "u2"]
     # Source config untouched
     assert cfg["views"][0]["sections"][0]["cards"][0]["conditions"][0]["conditions"][1][
         "users"
     ] == ["owner"]
+
+    audit = audit_dashboard_user_visibility(
+        new_cfg,
+        dashboard_url_path="lovelace",
+        bindings=[
+            {
+                "id": "bind-closed",
+                "label": "Closed",
+                "dashboard_url_path": "lovelace",
+                "locator": loc.to_dict(),
+                "fingerprint": fingerprint_node(node),
+                "stale": False,
+                "expression": {"include": ["force-closed"], "exclude": []},
+            }
+        ],
+    )
+    row = next(e for e in audit["elements"] if e["label"] == "Closed")
+    assert row["status"] == "managed"
+    assert row["lovelace_users"] == ["u1", "u2"]
 
 
 def test_conditional_and_tree_rewrites_user_leaf() -> None:
