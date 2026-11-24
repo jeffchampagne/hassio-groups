@@ -468,6 +468,11 @@ class VizGroupsPanel extends LitElement {
     .audit-users .member-meta strong { font-weight: 600; }
     .audit-users .member-meta span { font-size: 0.8rem; color: var(--hg-text-secondary); word-break: break-all; }
     .audit-source { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+    .audit-source .pill,
+    .audit-source .btn {
+      text-transform: none;
+      letter-spacing: normal;
+    }
     .sensor-attrs { margin: 8px 0 0; padding: 0; list-style: none; display: grid; gap: 4px; }
     .sensor-attrs li {
       display: grid; grid-template-columns: 8.5rem 1fr; gap: 10px;
@@ -2354,7 +2359,7 @@ class VizGroupsPanel extends LitElement {
       <div class="panel" style="margin-top:18px;padding:18px">
         <h2 class="section-title">Visibility audit</h2>
         <p class="hint" style="margin:0 0 12px">
-          Pick a dashboard to list elements that already have people condition visibility. Source will be Viz Groups when visibility is managed by this integration, or manual dashboard config when visibility was set directly on the dashboard.
+          Pick a dashboard to list elements that already have people condition visibility. Source will be Viz Groups when visibility is managed by this integration, or Manual Dashboard Config when visibility was set directly on the dashboard.
         </p>
         <div class="toolbar" style="margin:0 0 12px">
           <div class="field" style="margin:0;min-width:220px;flex:1">
@@ -2379,8 +2384,7 @@ class VizGroupsPanel extends LitElement {
           : nothing}
         <div class="panel" style="border:0;border-top:1px solid var(--hg-divider);border-radius:0">
           <table>
-            <p style="font-size:0.75rem;opacity:0.65;margin:0 0 8px">Showing view › section › path under each label (crumb13b)</p>
-          <thead>
+            <thead>
               <tr>
                 <th>Element</th>
                 <th>Type</th>
@@ -2578,4 +2582,9 @@ class VizGroupsPanel extends LitElement {
   }
 }
 
-customElements.define("vizgroups-panel", VizGroupsPanel);
+if (!customElements.get("vizgroups-panel")) {
+  customElements.define("vizgroups-panel", VizGroupsPanel);
+} else {
+  // Soft-reload / cache-bust: keep existing element class.
+}
+
