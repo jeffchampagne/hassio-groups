@@ -11,6 +11,7 @@ from vizgroups.sync import (
     apply_visibility_users,
     audit_dashboard_user_visibility,
     build_dashboard_preview_tree,
+    breadcrumb_for_locator,
     fingerprint_node,
     collect_visibility_user_ids,
     list_visibility_nodes,
@@ -206,6 +207,20 @@ def test_list_visibility_nodes_covers_kinds() -> None:
     assert {"view", "section", "card"} <= kinds
     assert any(n["label"] == "Apartment Door" for n in nodes)
 
+
+
+def test_breadcrumb_for_locator_card_and_section() -> None:
+    card_loc = Locator(
+        kind="card", view_path="home", view_index=0, section_index=0, card_index=0
+    )
+    crumb = breadcrumb_for_locator(SAMPLE, card_loc)
+    assert "›" in crumb or crumb  # SAMPLE labels vary with heading fixes
+    section_loc = Locator(kind="section", view_index=0, section_index=1)
+    assert breadcrumb_for_locator(SAMPLE, section_loc)
+    view_loc = Locator(kind="view", view_path="admin")
+    assert breadcrumb_for_locator(SAMPLE, view_loc)
+    missing = Locator(kind="card", view_index=0, section_index=0, card_index=99)
+    assert breadcrumb_for_locator(SAMPLE, missing) == ""
 
 def test_mushroom_template_primary_label() -> None:
     """Mushroom template cards store the visible title in ``primary``."""

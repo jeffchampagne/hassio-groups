@@ -32,6 +32,29 @@ from .sync import (
 )
 
 
+def _patch_binding_breadcrumb_serialization() -> None:
+    """Ensure Binding.to_dict always emits breadcrumb (config-entry soft reload)."""
+    from . import models
+
+    binding_cls = models.Binding
+    if getattr(binding_cls, "_vg_breadcrumb_to_dict", False):
+        return
+    original = binding_cls.to_dict
+
+    def to_dict(self: Any) -> dict[str, Any]:
+        data = original(self)
+        data["breadcrumb"] = str(
+            getattr(self, "breadcrumb", None) or data.get("breadcrumb") or ""
+        )
+        return data
+
+    binding_cls.to_dict = to_dict  # type: ignore[method-assign]
+    binding_cls._vg_breadcrumb_to_dict = True
+
+
+_patch_binding_breadcrumb_serialization()
+
+
 class _NoRuntime(RuntimeError):
     """Raised when Viz Groups has no active runtime."""
 
@@ -65,6 +88,15 @@ def async_register_websocket(hass: HomeAssistant) -> None:
     Callers should importlib.reload this module (and sync) before invoking so
     disk updates are picked up. Re-register replaces handlers by command type.
     """
+    import importlib
+
+    from . import lovelace_sync as lovelace_sync_mod
+    from . import models as models_mod
+
+    importlib.reload(models_mod)
+    importlib.reload(lovelace_sync_mod)
+    _patch_binding_breadcrumb_serialization()
+
     bucket = hass.data.setdefault(DOMAIN, {})
     websocket_api.async_register_command(hass, ws_subscribe)
     websocket_api.async_register_command(hass, ws_list_users)
@@ -76,6 +108,26 @@ def async_register_websocket(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, ws_dashboard_nodes)
     websocket_api.async_register_command(hass, ws_visibility_audit)
     websocket_api.async_register_command(hass, ws_update_options)
+    # Soft-reload: migrate in-memory bindings onto reloaded Binding class, then
+    # swap sync engines so breadcrumb backfill from lovelace_sync persists.
+    engine_cls = lovelace_sync_mod.LovelaceSyncEngine
+    binding_cls = models_mod.Binding
+    for value in list(bucket.values()):
+        if not hasattr(value, "store") or not hasattr(value, "entry"):
+            continue
+        store = value.store
+        migrated = {}
+        for bid, binding in list(store.bindings.items()):
+            raw = binding.to_dict()
+            raw["breadcrumb"] = str(
+                getattr(binding, "breadcrumb", None) or raw.get("breadcrumb") or ""
+            )
+            migrated[bid] = binding_cls.from_dict(raw)
+        store.bindings = migrated
+        options = dict(value.entry.options) if value.entry else {}
+        value.sync_engine = engine_cls(
+            value.hass, value.store, options=options
+        )
     bucket["websocket"] = True
 
 
@@ -87,6 +139,46 @@ def _runtime(hass: HomeAssistant) -> Any:
         if hasattr(value, "store"):
             return value
     raise _NoRuntime()
+
+
+def _binding_to_dict(binding: Any) -> dict[str, Any]:
+    """Serialize a binding, always including breadcrumb (soft-reload safe)."""
+    data = binding.to_dict()
+    data["breadcrumb"] = str(
+        getattr(binding, "breadcrumb", None) or data.get("breadcrumb") or ""
+    )
+    return data
+
+
+async def _async_backfill_binding_breadcrumbs(runtime: Any) -> bool:
+    """Fill binding.breadcrumb from Lovelace node paths; return True if saved."""
+    from .sync import list_visibility_nodes, locators_match
+
+    by_dash: dict[str, list[Any]] = {}
+    for binding in runtime.store.bindings.values():
+        path = binding.dashboard_url_path or "lovelace"
+        by_dash.setdefault(path, []).append(binding)
+
+    changed = False
+    for path, bindings in by_dash.items():
+        url_key: str | None = None if path in ("lovelace", "default") else path
+        try:
+            config = await runtime.sync_engine.async_get_lovelace_config(url_key)
+        except Exception:  # noqa: BLE001
+            continue
+        nodes = list_visibility_nodes(config)
+        for binding in bindings:
+            for node in nodes:
+                if not locators_match(binding.locator, node.get("locator")):
+                    continue
+                crumb = str(node.get("breadcrumb") or "")
+                if crumb and getattr(binding, "breadcrumb", "") != crumb:
+                    binding.breadcrumb = crumb
+                    changed = True
+                break
+    if changed:
+        await runtime.store.async_save()
+    return changed
 
 
 def panel_snapshot(hass: HomeAssistant) -> dict[str, Any]:
@@ -125,7 +217,7 @@ def panel_snapshot(hass: HomeAssistant) -> dict[str, Any]:
         )
     groups.sort(key=lambda g: g["name"].casefold())
 
-    bindings = [b.to_dict() for b in runtime.store.bindings.values()]
+    bindings = [_binding_to_dict(b) for b in runtime.store.bindings.values()]
     bindings.sort(
         key=lambda b: (b.get("dashboard_url_path") or "", b.get("label") or b["id"])
     )
@@ -162,6 +254,10 @@ async def ws_subscribe(
 
     connection.subscriptions[msg["id"]] = _noop
     connection.send_result(msg["id"])
+    try:
+        await _async_backfill_binding_breadcrumbs(_runtime(hass))
+    except Exception:  # noqa: BLE001
+        pass
     connection.send_message(
         websocket_api.event_message(
             msg["id"], {"event": "snapshot", **panel_snapshot(hass)}
@@ -285,6 +381,7 @@ async def ws_delete_group(
         vol.Optional("merge_mode"): vol.In(list(MERGE_MODES)),
         vol.Optional("fingerprint"): str,
         vol.Optional("label"): str,
+        vol.Optional("breadcrumb"): str,
     }
 )
 @websocket_api.require_admin
@@ -316,6 +413,8 @@ async def ws_save_binding(
             existing.fingerprint = msg.get("fingerprint") or ""
         if "label" in msg:
             existing.label = msg.get("label") or ""
+        if "breadcrumb" in msg:
+            existing.breadcrumb = msg.get("breadcrumb") or ""
         existing.updated = utcnow_iso()
         existing.stale = False
         await runtime.store.upsert_binding(existing)
@@ -327,6 +426,7 @@ async def ws_save_binding(
             merge_mode=msg.get("merge_mode") or MERGE_ENSURE_USER_BRANCH,
             fingerprint=msg.get("fingerprint") or "",
             label=msg.get("label") or "",
+            breadcrumb=msg.get("breadcrumb") or "",
             binding_id=binding_id,
         )
         await runtime.store.upsert_binding(binding)
@@ -367,6 +467,10 @@ async def ws_sync(
     msg: dict[str, Any],
 ) -> None:
     runtime = _runtime(hass)
+    try:
+        await _async_backfill_binding_breadcrumbs(runtime)
+    except Exception:  # noqa: BLE001
+        pass
     summary = await runtime.sync_engine.async_sync(
         dashboard=msg.get("dashboard"),
         dry_run=msg.get("dry_run"),

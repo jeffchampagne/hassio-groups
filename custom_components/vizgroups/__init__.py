@@ -45,13 +45,31 @@ _LOGGER = logging.getLogger(__name__)
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 def _reload_ws_modules() -> None:
-    """Reload panel/sync from disk so new websocket commands register without Core restart."""
+    """Reload integration modules from disk without a Core restart.
+
+    Order matters: models → sync → lovelace_sync → panel. Also refresh
+    ``LovelaceSyncEngine`` / ``GroupsStore`` symbols imported into this module
+    so config-entry reload picks up breadcrumb backfill and related fixes.
+    """
     pkg = __package__ or "custom_components.vizgroups"
-    # Reload dependency first, then panel (registers commands).
-    for mod_name in (f"{pkg}.sync", f"{pkg}.panel"):
+    for mod_name in (
+        f"{pkg}.models",
+        f"{pkg}.sync",
+        f"{pkg}.store",
+        f"{pkg}.lovelace_sync",
+        f"{pkg}.panel",
+    ):
         mod = sys.modules.get(mod_name)
         if mod is not None:
             importlib.reload(mod)
+    # Re-bind names this module imported at load time.
+    this = sys.modules[__name__]
+    ls = sys.modules.get(f"{pkg}.lovelace_sync")
+    if ls is not None and hasattr(ls, "LovelaceSyncEngine"):
+        this.LovelaceSyncEngine = ls.LovelaceSyncEngine
+    st = sys.modules.get(f"{pkg}.store")
+    if st is not None and hasattr(st, "GroupsStore"):
+        this.GroupsStore = st.GroupsStore
 
 
 
@@ -352,6 +370,7 @@ class GroupsRuntime:
                 merge_mode=call.data.get("merge_mode") or MERGE_ENSURE_USER_BRANCH,
                 fingerprint=call.data.get("fingerprint") or "",
                 label=call.data.get("label") or "",
+                breadcrumb=call.data.get("breadcrumb") or "",
             )
             await self.store.upsert_binding(binding)
             await self.async_maybe_autosync()
@@ -476,6 +495,7 @@ class GroupsRuntime:
                     vol.Optional("merge_mode"): vol.In(list(MERGE_MODES)),
                     vol.Optional("fingerprint"): cv.string,
                     vol.Optional("label"): cv.string,
+                    vol.Optional("breadcrumb"): cv.string,
                 }
             ),
             "unbind_element": vol.Schema({vol.Required("binding_id"): cv.string}),
