@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import importlib
 import inspect
 import logging
+import sys
 from typing import Any
 
 import voluptuous as vol
@@ -42,12 +44,26 @@ _LOGGER = logging.getLogger(__name__)
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
+def _reload_ws_modules() -> None:
+    """Reload panel/sync from disk so new websocket commands register without Core restart."""
+    pkg = __package__ or "custom_components.hassio_groups"
+    # Reload dependency first, then panel (registers commands).
+    for mod_name in (f"{pkg}.sync", f"{pkg}.panel"):
+        mod = sys.modules.get(mod_name)
+        if mod is not None:
+            importlib.reload(mod)
+
+
+
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     """Register panel + websocket early so the sidebar appears after setup."""
     hass.data.setdefault(DOMAIN, {})
-    async_register_websocket(hass)
-    await async_register_panel(hass)
+    _reload_ws_modules()
+    from .panel import async_register_panel as _reg_panel
+    from .panel import async_register_websocket as _reg_ws
+    _reg_ws(hass)
+    await _reg_panel(hass)
     return True
 
 
@@ -60,9 +76,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN][entry.entry_id] = runtime
 
-    async_register_websocket(hass)
+    _reload_ws_modules()
+    from .panel import async_register_panel as _reg_panel
+    from .panel import async_register_websocket as _reg_ws
+    _reg_ws(hass)
     if not hass.data[DOMAIN].get("panel"):
-        await async_register_panel(hass)
+        await _reg_panel(hass)
 
     await runtime.async_prune_users()
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
