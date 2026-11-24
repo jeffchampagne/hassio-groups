@@ -151,6 +151,8 @@ class HaGroupsPanel extends LitElement {
     _auditReport: { state: true },
     _auditExpanded: { state: true },
     _clipStatus: { state: true },
+    _pasteOpen: { state: true },
+    _pasteDraft: { state: true },
   };
 
   static styles = css`
@@ -283,7 +285,7 @@ class HaGroupsPanel extends LitElement {
       position: absolute;
       right: 0;
       bottom: calc(100% + 8px);
-      z-index: 20;
+      z-index: 80;
       min-width: 12rem;
       max-width: min(18rem, calc(100vw - 2rem));
       padding: 8px 10px;
@@ -406,8 +408,37 @@ class HaGroupsPanel extends LitElement {
     .editor-col-head {
       display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
       padding: 18px 18px 8px;
+      position: relative;
+      z-index: 40;
+      overflow: visible;
     }
     .editor-col-head .section-title { margin: 0; flex: 1; }
+    /* Tip below Paste — when layout-3 stacks, Members sits above and would cover an upward tip. */
+    .editor-col-head .has-tip { position: relative; z-index: 41; }
+    .editor-col-head .has-tip::after {
+      top: calc(100% + 8px);
+      bottom: auto;
+      right: 0;
+      left: auto;
+      z-index: 90;
+      transform: translateY(-4px);
+    }
+    .editor-col-head .has-tip:hover::after,
+    .editor-col-head .has-tip:focus-visible::after {
+      transform: translateY(0);
+    }
+    .panel.panel-flush {
+      overflow: visible;
+    }
+    .paste-box {
+      margin: 0 18px 12px; padding: 12px; border: 1px solid var(--hg-divider);
+      border-radius: 12px; background: var(--hg-bg-secondary, var(--hg-card));
+    }
+    .paste-box textarea {
+      width: 100%; min-height: 96px; resize: vertical; font: inherit;
+      box-sizing: border-box;
+    }
+    .paste-box .toolbar { margin: 10px 0 0; }
     .audit-users { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
     .audit-users li { display: flex; align-items: center; gap: 10px; }
     .audit-users .member-meta strong { font-weight: 600; }
@@ -728,6 +759,8 @@ class HaGroupsPanel extends LitElement {
     this._auditExpanded = {};
     this._clipStatus = "";
     this._clipStatusTimer = null;
+    this._pasteOpen = false;
+    this._pasteDraft = "";
   }
 
   connectedCallback() {
@@ -868,6 +901,8 @@ class HaGroupsPanel extends LitElement {
     this._groupIdManual = false;
     this._iconFilter = "";
     this._iconPickerOpen = false;
+    this._pasteOpen = false;
+    this._pasteDraft = "";
     this._draft = {
       name: "",
       group_id: "",
@@ -884,6 +919,8 @@ class HaGroupsPanel extends LitElement {
     this._groupIdManual = true;
     this._iconFilter = "";
     this._iconPickerOpen = false;
+    this._pasteOpen = false;
+    this._pasteDraft = "";
     this._draft = {
       name: group.name,
       group_id: group.id,
@@ -965,19 +1002,33 @@ class HaGroupsPanel extends LitElement {
       return;
     }
     const text = ids.join("\n");
+    const fallbackCopy = () => {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.setAttribute("readonly", "");
+      ta.style.position = "fixed";
+      ta.style.left = "-9999px";
+      document.body.appendChild(ta);
+      ta.focus();
+      ta.select();
+      const ok = document.execCommand("copy");
+      document.body.removeChild(ta);
+      return ok;
+    };
     try {
-      if (navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(text);
-      } else {
-        const ta = document.createElement("textarea");
-        ta.value = text;
-        ta.setAttribute("readonly", "");
-        ta.style.position = "fixed";
-        ta.style.left = "-9999px";
-        document.body.appendChild(ta);
-        ta.select();
-        document.execCommand("copy");
-        document.body.removeChild(ta);
+      let ok = false;
+      try {
+        if (navigator.clipboard?.writeText) {
+          await navigator.clipboard.writeText(text);
+          ok = true;
+        }
+      } catch (_err) {
+        ok = false;
+      }
+      if (!ok) ok = fallbackCopy();
+      if (!ok) {
+        // Last resort: show prompt so user can copy manually in WebView.
+        window.prompt("Copy these user IDs:", text);
       }
       this._setClipStatus(`Copied ${ids.length} ID${ids.length === 1 ? "" : "s"}`);
     } catch (err) {
@@ -985,23 +1036,21 @@ class HaGroupsPanel extends LitElement {
     }
   }
 
-  async _pasteGroupMembers() {
-    if (!this._draft) return;
-    let text = "";
+  async _readClipboardText() {
     try {
-      if (!navigator.clipboard?.readText) {
-        throw new Error("Clipboard paste is not available in this browser");
+      if (navigator.clipboard?.readText) {
+        return await navigator.clipboard.readText();
       }
-      text = await navigator.clipboard.readText();
-    } catch (err) {
-      this._error = err?.message || "Could not read clipboard";
-      return;
+    } catch (_err) {
+      /* HA WebView / insecure context often blocks clipboard read */
     }
+    return "";
+  }
+
+  _applyMemberIdsFromText(text) {
+    if (!this._draft) return 0;
     const ids = this._parseUserIdsFromText(text);
-    if (!ids.length) {
-      this._setClipStatus("No user IDs in clipboard");
-      return;
-    }
+    if (!ids.length) return 0;
     const set = new Set(this._draft.member_user_ids || []);
     let added = 0;
     for (const id of ids) {
@@ -1011,12 +1060,99 @@ class HaGroupsPanel extends LitElement {
       }
     }
     this._draft = { ...this._draft, member_user_ids: [...set] };
+    return added;
+  }
+
+  async _openPasteBox(prefill = "") {
+    this._pasteDraft = prefill || "";
+    this._pasteOpen = true;
+    this._setClipStatus("Paste IDs into the box, then Apply");
+    await this.updateComplete;
+    const ta = this.renderRoot?.querySelector?.("#hg-paste-ids");
+    if (ta) {
+      ta.focus();
+      ta.select();
+    }
+  }
+
+  async _pasteGroupMembers() {
+    if (!this._draft) return;
+    this._error = "";
+
+    // 1) Silent clipboard read when the browser allows it.
+    const clip = (await this._readClipboardText()).trim();
+    if (clip && this._parseUserIdsFromText(clip).length) {
+      const added = this._applyMemberIdsFromText(clip);
+      this._pasteOpen = false;
+      this._pasteDraft = "";
+      this._setClipStatus(
+        added
+          ? `Selected ${added} user${added === 1 ? "" : "s"}`
+          : "Already selected",
+      );
+      return;
+    }
+
+    // 2) window.prompt — quick path in some Companion WebViews.
+    let prompted;
+    let promptOk = true;
+    try {
+      prompted = window.prompt(
+        "Paste Home Assistant user IDs (one per line, or comma-separated). Leave blank and OK for the paste box.",
+        clip || this._pasteDraft || "",
+      );
+    } catch (_err) {
+      promptOk = false;
+      prompted = null;
+    }
+    if (promptOk && prompted === null) {
+      // User cancelled — do not force the textarea.
+      return;
+    }
+    if (typeof prompted === "string" && prompted.trim()) {
+      const ids = this._parseUserIdsFromText(prompted);
+      if (!ids.length) {
+        this._setClipStatus("No user IDs found");
+        await this._openPasteBox(prompted);
+        return;
+      }
+      const added = this._applyMemberIdsFromText(prompted);
+      this._pasteOpen = false;
+      this._pasteDraft = "";
+      this._setClipStatus(
+        added
+          ? `Selected ${added} user${added === 1 ? "" : "s"}`
+          : "Already selected",
+      );
+      return;
+    }
+
+    // 3) Textarea — native long-press/Ctrl+V paste works in HA WebView.
+    await this._openPasteBox(clip || this._pasteDraft || "");
+  }
+
+  _applyPasteMembers() {
+    if (!this._draft) return;
+    const text = this._pasteDraft || "";
+    const ids = this._parseUserIdsFromText(text);
+    if (!ids.length) {
+      this._setClipStatus("No user IDs found");
+      return;
+    }
+    const added = this._applyMemberIdsFromText(text);
+    this._pasteOpen = false;
+    this._pasteDraft = "";
     this._error = "";
     this._setClipStatus(
       added
         ? `Selected ${added} user${added === 1 ? "" : "s"}`
         : "Already selected",
     );
+  }
+
+  _cancelPasteMembers() {
+    this._pasteOpen = false;
+    this._pasteDraft = "";
   }
 
   _pickIcon(icon) {
@@ -1576,16 +1712,30 @@ class HaGroupsPanel extends LitElement {
           </div>
         </div>
 
-        <div class="panel">
+        <div class="panel panel-flush">
           <div class="editor-col-head">
             <h2 class="section-title">Home Assistant Users</h2>
-            <button type="button" class="btn btn-ghost btn-sm has-tip"
-              data-tip="Paste user IDs from clipboard as group members"
+            <button type="button" class="btn btn-ghost btn-sm has-tip tip-below"
+              data-tip="Paste user IDs (clipboard, prompt, or paste box)"
               @click=${this._pasteGroupMembers}>Paste</button>
             ${this._clipStatus && this._view === "editor"
               ? html`<span class="clip-status">${this._clipStatus}</span>`
               : nothing}
           </div>
+          ${this._pasteOpen
+            ? html`<div class="paste-box">
+                <label class="hint" style="display:block;margin:0 0 8px"
+                  for="hg-paste-ids">Paste user IDs here (one per line), then Apply. Long-press → Paste works in the Companion app.</label>
+                <textarea id="hg-paste-ids"
+                  .value=${this._pasteDraft}
+                  @input=${(e) => (this._pasteDraft = e.target.value)}
+                  placeholder="user-id-1&#10;user-id-2"></textarea>
+                <div class="toolbar">
+                  <button type="button" class="btn btn-primary btn-sm" @click=${this._applyPasteMembers}>Apply</button>
+                  <button type="button" class="btn btn-ghost btn-sm" @click=${this._cancelPasteMembers}>Cancel</button>
+                </div>
+              </div>`
+            : nothing}
           <div class="user-search">
             <input
               type="search"
