@@ -167,7 +167,7 @@ class LovelaceSyncEngine:
                     if url in seen or stem in seen:
                         continue
                     seen.add(url)
-                    title = "HA Groups Lab" if url == "ha-groups-lab" else url.replace("-", " ").title()
+                    title = "Viz Groups Lab" if url == "ha-groups-lab" else url.replace("-", " ").title()
                     items.append(
                         {
                             "url_path": url,
@@ -320,7 +320,7 @@ class LovelaceSyncEngine:
         mode_val = _mode_str(getattr(dashboard, "mode", None))
         if mode_val not in ("storage", "yaml"):
             raise HomeAssistantError(
-                f"Dashboard '{display}' is mode={mode_val}; HA Groups supports storage/yaml"
+                f"Dashboard '{display}' is mode={mode_val}; Viz Groups supports storage/yaml"
             )
 
         config: dict[str, Any] | None = None
@@ -527,7 +527,7 @@ class LovelaceSyncEngine:
         }
         self.hass.bus.async_fire(EVENT_SYNCED, summary)
         _LOGGER.info(
-            "HA Groups sync finished dry_run=%s bindings=%s errors=%s",
+            "Viz Groups sync finished dry_run=%s bindings=%s errors=%s",
             do_dry,
             len(results),
             len(errors),

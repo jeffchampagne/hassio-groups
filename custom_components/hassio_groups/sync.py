@@ -434,7 +434,7 @@ def audit_dashboard_user_visibility(
 ) -> dict[str, Any]:
     """
     Scan Lovelace for elements with condition:user visibility and classify
-    each as managed (matched HA Groups binding) or outside/manual.
+    each as managed (matched Viz Groups binding) or outside/manual.
     """
     dash = dashboard_url_path or "lovelace"
     relevant = []

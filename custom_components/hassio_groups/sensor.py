@@ -1,4 +1,4 @@
-"""Group membership sensors for HA Groups."""
+"""Group membership sensors for Viz Groups."""
 
 from __future__ import annotations
 

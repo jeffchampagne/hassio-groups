@@ -1,4 +1,4 @@
-"""HA Groups admin panel registration + websocket API."""
+"""Viz Groups admin panel registration + websocket API."""
 
 from __future__ import annotations
 
@@ -33,7 +33,7 @@ from .sync import (
 
 
 class _NoRuntime(RuntimeError):
-    """Raised when HA Groups has no active runtime."""
+    """Raised when Viz Groups has no active runtime."""
 
 
 async def async_register_panel(hass: HomeAssistant) -> None:
@@ -62,9 +62,8 @@ async def async_register_panel(hass: HomeAssistant) -> None:
 def async_register_websocket(hass: HomeAssistant) -> None:
     """Register admin-only websocket commands for the panel.
 
-    Always (re)register so file updates on disk are picked up after config-entry
-    reload without requiring a full Core restart. HA keeps a command dict keyed
-    by ``type``; registering again replaces the handler.
+    Callers should importlib.reload this module (and sync) before invoking so
+    disk updates are picked up. Re-register replaces handlers by command type.
     """
     bucket = hass.data.setdefault(DOMAIN, {})
     websocket_api.async_register_command(hass, ws_subscribe)
@@ -100,7 +99,7 @@ def panel_snapshot(hass: HomeAssistant) -> dict[str, Any]:
             "bindings": [],
             "users": [],
             "sync": {},
-            "warning": "HA Groups is not set up yet.",
+            "warning": "Viz Groups is not set up yet.",
         }
 
     users = runtime.list_users_for_panel()
@@ -415,7 +414,7 @@ async def ws_visibility_audit(
     connection: websocket_api.ActiveConnection,
     msg: dict[str, Any],
 ) -> None:
-    """Scan a dashboard for condition:user visibility vs HA Groups bindings."""
+    """Scan a dashboard for condition:user visibility vs Viz Groups bindings."""
     runtime = _runtime(hass)
     path = msg["dashboard_url_path"]
     url_key: str | None = None if path in ("lovelace", "default") else path
@@ -449,7 +448,7 @@ async def ws_update_options(
     runtime = _runtime(hass)
     entry = runtime.entry
     if entry is None:
-        connection.send_error(msg["id"], "no_entry", "HA Groups has no config entry")
+        connection.send_error(msg["id"], "no_entry", "Viz Groups has no config entry")
         return
     options = dict(entry.options)
     if "auto_sync" in msg:

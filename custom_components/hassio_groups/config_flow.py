@@ -1,4 +1,4 @@
-"""Config flow for HA Groups."""
+"""Config flow for Viz Groups."""
 
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ async def _async_existing(hass: HomeAssistant) -> bool:
 
 
 class HassioGroupsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
-    """Handle a config flow for HA Groups (single instance)."""
+    """Handle a config flow for Viz Groups (single instance)."""
 
     VERSION = 1
 

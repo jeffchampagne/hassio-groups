@@ -13,7 +13,7 @@ from .membership import normalize_user_ids
 
 
 class GroupsStore:
-    """Load/save HA Groups definitions from Home Assistant Store."""
+    """Load/save Viz Groups definitions from Home Assistant Store."""
 
     def __init__(self, hass: HomeAssistant) -> None:
         self.hass = hass
