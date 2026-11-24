@@ -167,7 +167,7 @@ class LovelaceSyncEngine:
                     if url in seen or stem in seen:
                         continue
                     seen.add(url)
-                    title = "Viz Groups Lab" if url == "ha-groups-lab" else url.replace("-", " ").title()
+                    title = "Viz Groups Lab" if url == "groups-lab" else url.replace("-", " ").title()
                     items.append(
                         {
                             "url_path": url,

@@ -49,8 +49,8 @@ class GroupsStore:
         if group_id in self.groups:
             return self.groups[group_id]
         needle = group_id
-        if needle.startswith("sensor.hassio_groups_"):
-            needle = needle.removeprefix("sensor.hassio_groups_")
+        if needle.startswith("sensor.groups_"):
+            needle = needle.removeprefix("sensor.groups_")
         for group in self.groups.values():
             if group.id == needle:
                 return group

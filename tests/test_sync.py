@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from hassio_groups.const import MERGE_ENSURE_USER_BRANCH, MERGE_REPLACE_USER
-from hassio_groups.models import Locator
-from hassio_groups.sync import (
+from groups.const import MERGE_ENSURE_USER_BRANCH, MERGE_REPLACE_USER
+from groups.models import Locator
+from groups.sync import (
     apply_binding_to_config,
     apply_visibility_users,
     fingerprint_node,

@@ -1,4 +1,4 @@
-"""Load pure hassio_groups modules without importing the HA __init__."""
+"""Load pure groups modules without importing the HA __init__."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import sys
 import types
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-PKG = ROOT / "custom_components" / "hassio_groups"
+PKG = ROOT / "custom_components" / "groups"
 
 
 def _load(name: str, path: pathlib.Path):
@@ -21,13 +21,13 @@ def _load(name: str, path: pathlib.Path):
 
 
 # Minimal package shell so relative imports inside sync.py work.
-if "hassio_groups" not in sys.modules:
-    pkg = types.ModuleType("hassio_groups")
+if "groups" not in sys.modules:
+    pkg = types.ModuleType("groups")
     pkg.__path__ = [str(PKG)]  # type: ignore[attr-defined]
     pkg.__file__ = str(PKG / "__init__.py")
-    sys.modules["hassio_groups"] = pkg
+    sys.modules["groups"] = pkg
 
-_load("hassio_groups.const", PKG / "const.py")
-_load("hassio_groups.models", PKG / "models.py")
-_load("hassio_groups.membership", PKG / "membership.py")
-_load("hassio_groups.sync", PKG / "sync.py")
+_load("groups.const", PKG / "const.py")
+_load("groups.models", PKG / "models.py")
+_load("groups.membership", PKG / "membership.py")
+_load("groups.sync", PKG / "sync.py")

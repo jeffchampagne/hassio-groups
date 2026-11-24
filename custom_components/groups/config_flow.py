@@ -27,7 +27,7 @@ async def _async_existing(hass: HomeAssistant) -> bool:
     return bool(hass.config_entries.async_entries(DOMAIN))
 
 
-class HassioGroupsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
+class GroupsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Viz Groups (single instance)."""
 
     VERSION = 1
@@ -71,10 +71,10 @@ class HassioGroupsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     def async_get_options_flow(
         config_entry: config_entries.ConfigEntry,
     ) -> config_entries.OptionsFlow:
-        return HassioGroupsOptionsFlow(config_entry)
+        return GroupsOptionsFlow(config_entry)
 
 
-class HassioGroupsOptionsFlow(config_entries.OptionsFlow):
+class GroupsOptionsFlow(config_entries.OptionsFlow):
     """Options: dry-run, dashboard allowlist (auto-sync always on)."""
 
     def __init__(self, config_entry: config_entries.ConfigEntry) -> None:

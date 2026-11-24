@@ -46,7 +46,7 @@ CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 def _reload_ws_modules() -> None:
     """Reload panel/sync from disk so new websocket commands register without Core restart."""
-    pkg = __package__ or "custom_components.hassio_groups"
+    pkg = __package__ or "custom_components.groups"
     # Reload dependency first, then panel (registers commands).
     for mod_name in (f"{pkg}.sync", f"{pkg}.panel"):
         mod = sys.modules.get(mod_name)
@@ -72,7 +72,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     store = GroupsStore(hass)
     await store.async_load()
 
-    runtime = HassioGroupsRuntime(hass, store, entry)
+    runtime = GroupsRuntime(hass, store, entry)
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN][entry.entry_id] = runtime
 
@@ -106,7 +106,7 @@ async def _async_reload_options(hass: HomeAssistant, entry: ConfigEntry) -> None
         runtime.sync_engine.options = dict(entry.options)
 
 
-class HassioGroupsRuntime:
+class GroupsRuntime:
     """Owns store, sensors, services, and sync engine."""
 
     def __init__(

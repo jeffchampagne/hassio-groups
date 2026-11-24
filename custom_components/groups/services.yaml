@@ -166,6 +166,6 @@ debug_dashboard:
   fields:
     dashboard:
       name: Dashboard
-      example: ha-groups-lab
+      example: groups-lab
       selector:
         text:
