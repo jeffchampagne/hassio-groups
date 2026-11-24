@@ -1,9 +1,11 @@
-"""Lovelace sync engine skeleton — loads/saves storage dashboards via HA APIs."""
+"""Lovelace sync engine — loads/saves storage and YAML dashboards via HA APIs."""
 
 from __future__ import annotations
 
 import logging
 from typing import Any
+
+import yaml
 
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
@@ -25,8 +27,14 @@ from .sync import apply_binding_to_config
 _LOGGER = logging.getLogger(__name__)
 
 
+def _mode_str(mode: Any) -> str:
+    if mode is None:
+        return "storage"
+    return str(getattr(mode, "value", mode)).lower()
+
+
 class LovelaceSyncEngine:
-    """Apply bindings to storage-mode Lovelace configs."""
+    """Apply bindings to Lovelace configs (storage or yaml)."""
 
     def __init__(
         self,
@@ -61,37 +69,35 @@ class LovelaceSyncEngine:
             normalize_duplicates=self.normalize_duplicates,
         )
 
-    async def async_get_lovelace_config(self, url_path: str | None) -> dict[str, Any]:
-        """Fetch a dashboard config via lovelace websocket API path."""
-        # Prefer the lovelace component's internal API when available.
+    def _dashboards(self) -> Any:
         lovelace = self.hass.data.get("lovelace")
         if lovelace is None:
             raise HomeAssistantError("Lovelace is not available")
-
-        # HA stores dashboards under lovelace dashboards collection.
         dashboards = getattr(lovelace, "dashboards", None)
         if dashboards is None:
             raise HomeAssistantError("Lovelace dashboards API unavailable")
+        return dashboards
 
-        key = url_path  # None / "lovelace" → default dashboard depending on HA version
+    def _get_dashboard(self, url_path: str | None) -> Any:
+        dashboards = self._dashboards()
         try:
-            dashboard = dashboards.get(key)
+            dashboard = dashboards.get(url_path)
         except Exception as err:  # noqa: BLE001
             raise HomeAssistantError(f"Dashboard not found: {url_path}") from err
-
         if dashboard is None:
-            # Fallback: try empty string / None for Overview
             dashboard = dashboards.get(None) or dashboards.get("")
         if dashboard is None:
             raise HomeAssistantError(f"Dashboard not found: {url_path}")
+        return dashboard
 
-        mode = getattr(dashboard, "mode", None)
-        mode_val = getattr(mode, "value", mode)
-        if mode_val and str(mode_val) != "storage":
+    async def async_get_lovelace_config(self, url_path: str | None) -> dict[str, Any]:
+        """Fetch a dashboard config via lovelace API (storage or yaml)."""
+        dashboard = self._get_dashboard(url_path)
+        mode_val = _mode_str(getattr(dashboard, "mode", None))
+        if mode_val not in ("storage", "yaml"):
             raise HomeAssistantError(
-                f"Dashboard '{url_path}' is mode={mode_val}; HA Groups only writes storage dashboards"
+                f"Dashboard '{url_path}' is mode={mode_val}; HA Groups supports storage/yaml"
             )
-
         config = await dashboard.async_load(False)
         if not isinstance(config, dict):
             raise HomeAssistantError("Invalid lovelace config payload")
@@ -100,14 +106,73 @@ class LovelaceSyncEngine:
     async def async_save_lovelace_config(
         self, url_path: str | None, config: dict[str, Any]
     ) -> None:
-        lovelace = self.hass.data.get("lovelace")
-        dashboards = getattr(lovelace, "dashboards", None)
-        dashboard = dashboards.get(url_path) if dashboards else None
-        if dashboard is None and dashboards is not None:
-            dashboard = dashboards.get(None) or dashboards.get("")
-        if dashboard is None:
-            raise HomeAssistantError(f"Dashboard not found: {url_path}")
-        await dashboard.async_save(config)
+        dashboard = self._get_dashboard(url_path)
+        mode_val = _mode_str(getattr(dashboard, "mode", None))
+        if mode_val == "storage":
+            await dashboard.async_save(config)
+            return
+        if mode_val == "yaml":
+            # LovelaceYAML exposes an absolute `.path`; prefer that over filename guesswork.
+            path = getattr(dashboard, "path", None)
+            filename: str | None = None
+            if path:
+                path = str(path)
+            else:
+                filename = (
+                    getattr(dashboard, "filename", None)
+                    or getattr(dashboard, "_filename", None)
+                )
+                cfg = (
+                    getattr(dashboard, "_config", None)
+                    or getattr(dashboard, "config", None)
+                    or {}
+                )
+                if not filename and isinstance(cfg, dict):
+                    filename = cfg.get("filename")
+                if not filename and url_path:
+                    # Fall back to lovelace.dashboards registration in configuration.yaml
+                    try:
+                        from homeassistant.config import load_yaml_config_file
+
+                        conf = load_yaml_config_file(
+                            self.hass.config.path("configuration.yaml")
+                        )
+                        dash_conf = (
+                            (conf.get("lovelace") or {}).get("dashboards") or {}
+                        ).get(url_path) or {}
+                        filename = dash_conf.get("filename")
+                    except Exception:  # noqa: BLE001
+                        filename = None
+                if not filename:
+                    raise HomeAssistantError(
+                        f"YAML dashboard '{url_path}' has no path/filename to write"
+                    )
+                path = self.hass.config.path(str(filename))
+
+            def _write() -> None:
+                with open(path, "w", encoding="utf-8") as handle:
+                    yaml.safe_dump(
+                        config,
+                        handle,
+                        default_flow_style=False,
+                        allow_unicode=True,
+                        sort_keys=False,
+                    )
+
+            await self.hass.async_add_executor_job(_write)
+            # Drop stale YAML cache so the next load sees our write.
+            if hasattr(dashboard, "_cache"):
+                dashboard._cache = None  # noqa: SLF001
+            if self.hass.services.has_service("lovelace", "reload"):
+                await self.hass.services.async_call("lovelace", "reload", blocking=True)
+            _LOGGER.info(
+                "Wrote YAML dashboard %s and reloaded lovelace",
+                filename or path,
+            )
+            return
+        raise HomeAssistantError(
+            f"Dashboard '{url_path}' is mode={mode_val}; cannot save"
+        )
 
     async def async_sync(
         self, *, dashboard: str | None = None, dry_run: bool | None = None
