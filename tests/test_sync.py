@@ -220,6 +220,17 @@ def test_replace_mode_keeps_non_user_top_level() -> None:
     )
 
 
+def test_fingerprint_includes_mushroom_primary() -> None:
+    card = {
+        "type": "custom:mushroom-template-card",
+        "primary": "John's Apartment",
+    }
+    fp = fingerprint_node(card)
+    assert fp.startswith("custom:mushroom-template-card|")
+    assert "John's Apartment" in fp
+    assert fp != "custom:mushroom-template-card|"
+
+
 def test_node_label_prefers_mushroom_primary() -> None:
     card = {
         "type": "custom:mushroom-template-card",

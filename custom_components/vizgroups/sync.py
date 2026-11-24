@@ -15,9 +15,17 @@ def fingerprint_node(node: dict[str, Any] | None) -> str:
     """Stable-ish fingerprint from type + title/entity for drift detection."""
     if not isinstance(node, dict):
         return ""
+    # Include mushroom primary (and other title-ish fields) so fingerprints
+    # are not just "custom:mushroom-template-card|" with an empty title segment.
+    titleish = ""
+    for key in ("primary", "label", "name", "title", "heading"):
+        val = node.get(key)
+        if isinstance(val, str) and val.strip():
+            titleish = val.strip()
+            break
     parts = [
         str(node.get("type") or ""),
-        str(node.get("title") or node.get("name") or ""),
+        titleish,
     ]
     entity = node.get("entity")
     if isinstance(entity, str):
@@ -621,6 +629,8 @@ def _card_preview(card: dict[str, Any]) -> dict[str, Any]:
             "vertical-stack": "mdi:view-sequential",
             "grid": "mdi:view-grid",
         }.get(ntype, "mdi:card")
+        if isinstance(ntype, str) and ntype.startswith("custom:mushroom"):
+            icon = "mdi:mushroom"
     return {
         "label": label,
         "snippet": snippet,
