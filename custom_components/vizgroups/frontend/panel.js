@@ -1316,6 +1316,34 @@ class VizGroupsPanel extends LitElement {
     return this._normalizeDraftMembers([...users, ...groups]);
   }
 
+  /**
+   * Groups-list MEMBERS cell: direct user count (typed members + legacy) and
+   * nested-group count. Prefer effective user count when the backend provides
+   * it and it is at least the direct count (covers users reached only via nesting).
+   */
+  _groupListMemberSummary(group) {
+    const members = this._membersFromGroup(group);
+    const directUsers = members.filter((m) => m.type === "user").length;
+    const nestedFromMembers = members.filter((m) => m.type === "group");
+    const nestedGroupCount = Math.max(
+      nestedFromMembers.length,
+      Array.isArray(group.nested_groups) ? group.nested_groups.length : 0,
+      Array.isArray(group.member_group_ids) ? group.member_group_ids.length : 0,
+    );
+    let userCount = directUsers;
+    if (typeof group.effective_user_count === "number") {
+      userCount = Math.max(group.effective_user_count, directUsers);
+    } else if (Array.isArray(group.effective_user_ids) && group.effective_user_ids.length) {
+      userCount = Math.max(group.effective_user_ids.length, directUsers);
+    } else if (!directUsers && Array.isArray(group.member_user_ids)) {
+      userCount = group.member_user_ids.length;
+    }
+    const nestedRows = (Array.isArray(group.nested_groups) && group.nested_groups.length)
+      ? group.nested_groups
+      : nestedFromMembers;
+    return { userCount, nestedGroupCount, nestedRows };
+  }
+
   _openCreateGroup() {
     this._selectedGroupId = null;
     this._groupIdManual = false;
@@ -2182,13 +2210,8 @@ class VizGroupsPanel extends LitElement {
               ? html`<tr><td colspan="2">No groups yet. Create one to get started.</td></tr>`
               : groups.map(
                   (g) => {
-                    const nested = (g.nested_groups || g.members || []).filter(
-                      (m) => m && m.type === "group",
-                    );
-                    const userCount = g.effective_user_count
-                      ?? (g.effective_user_ids || []).length
-                      ?? (g.member_user_ids || []).length
-                      ?? 0;
+                    const { userCount, nestedGroupCount, nestedRows } =
+                      this._groupListMemberSummary(g);
                     return html`
                     <tr class="row-click" @click=${() => this._openEditGroup(g)}>
                       <td>
@@ -2203,7 +2226,10 @@ class VizGroupsPanel extends LitElement {
                       <td>
                         <div class="chip-row">
                           <span class="pill">${userCount} user${userCount === 1 ? "" : "s"}</span>
-                          ${nested.map((ng) => html`
+                          ${nestedGroupCount
+                            ? html`<span class="pill nested">${nestedGroupCount} group${nestedGroupCount === 1 ? "" : "s"}</span>`
+                            : nothing}
+                          ${nestedRows.map((ng) => html`
                             <span class="pill nested">
                               ${this._renderHaIcon(ng.icon || "mdi:account-group")}
                               ${ng.name || ng.id}
