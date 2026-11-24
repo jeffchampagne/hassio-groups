@@ -141,6 +141,7 @@ class HaGroupsPanel extends LitElement {
     _previewViewIndex: { state: true },
     _hoverKey: { state: true },
     _selectedNodeLabel: { state: true },
+    _selectedNodeSubtitle: { state: true },
     _selectedNodeKey: { state: true },
     _advancedLocatorOpen: { state: true },
     _excludeOpen: { state: true },
@@ -349,6 +350,9 @@ class HaGroupsPanel extends LitElement {
       background: rgba(31,107,79,0.08);
     }
     .selected-node .k { font-size: 0.72rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
+    .selected-node .sub { margin-top: 4px; font-size: 0.82rem; color: var(--muted); line-height: 1.35; }
+    .toggle-row { display: inline-flex; align-items: center; gap: 8px; font-size: 0.88rem; color: var(--ink-soft); }
+    .toggle-row input { accent-color: var(--accent); width: 16px; height: 16px; }
     details.advanced {
       margin-top: 12px; border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px;
       background: rgba(255,255,255,0.45);
@@ -516,6 +520,7 @@ class HaGroupsPanel extends LitElement {
     this._previewViewIndex = 0;
     this._hoverKey = "";
     this._selectedNodeLabel = "";
+    this._selectedNodeSubtitle = "";
     this._selectedNodeKey = "";
     this._advancedLocatorOpen = false;
     this._excludeOpen = false;
@@ -586,6 +591,15 @@ class HaGroupsPanel extends LitElement {
 
   get _dashboards() {
     return this._data?.dashboards || [];
+  }
+
+  get _options() {
+    return this._data?.options || {};
+  }
+
+  get _autoSync() {
+    const v = this._options.auto_sync;
+    return v === undefined ? true : !!v;
   }
 
   get _selectedGroup() {
@@ -737,6 +751,7 @@ class HaGroupsPanel extends LitElement {
     this._previewViewIndex = 0;
     this._hoverKey = "";
     this._selectedNodeLabel = "";
+    this._selectedNodeSubtitle = "";
     this._selectedNodeKey = "";
     this._advancedLocatorOpen = false;
     this._excludeOpen = false;
@@ -772,6 +787,7 @@ class HaGroupsPanel extends LitElement {
     if (!urlPath) return;
     this._bindingDraft = { ...this._bindingDraft, dashboard_url_path: urlPath };
     this._selectedNodeLabel = "";
+    this._selectedNodeSubtitle = "";
     this._selectedNodeKey = "";
     await this._loadDashboardPreview(urlPath);
   }
@@ -911,7 +927,15 @@ class HaGroupsPanel extends LitElement {
       fingerprint: node.fingerprint || "",
       label: this._bindingDraft.label || node.label || "",
     };
-    this._selectedNodeLabel = node.breadcrumb || node.label || this._locatorSummary(loc, node.fingerprint);
+    const title = node.label || node.snippet || loc.kind || "Target";
+    const crumb = node.breadcrumb || "";
+    const ntype = node.type || loc.kind || "";
+    const subBits = [];
+    if (crumb && crumb !== title) subBits.push(crumb);
+    else if (crumb) subBits.push(crumb);
+    if (ntype) subBits.push(ntype);
+    this._selectedNodeLabel = title;
+    this._selectedNodeSubtitle = subBits.join(" · ");
     this._selectedNodeKey = this._nodeKey(node);
     this._hoverKey = "";
     this._excludeOpen = !!(this._bindingDraft.exclude && this._bindingDraft.exclude.length);
@@ -934,6 +958,7 @@ class HaGroupsPanel extends LitElement {
     this._previewTree = [];
     this._nodes = [];
     this._selectedNodeLabel = "";
+    this._selectedNodeSubtitle = "";
     this._selectedNodeKey = "";
     if (this._pickerStep === "preview") this._pickerStep = "dashboards";
   }
@@ -972,11 +997,17 @@ class HaGroupsPanel extends LitElement {
       fingerprint: binding.fingerprint || "",
     };
     this._resetNodeBrowser();
-    this._selectedNodeLabel = this._locatorSummary(
+    const editTitle = binding.label || this._locatorSummary(
       this._bindingDraft.locator,
       this._bindingDraft.fingerprint,
-      binding.label || "",
+      "",
     );
+    this._selectedNodeLabel = editTitle;
+    const editBits = [];
+    const summary = this._locatorSummary(this._bindingDraft.locator, this._bindingDraft.fingerprint, "");
+    if (summary && summary !== editTitle) editBits.push(summary);
+    if (loc.kind) editBits.push(loc.kind);
+    this._selectedNodeSubtitle = editBits.join(" · ");
     this._selectedNodeKey = this._nodeKey({
       locator: this._bindingDraft.locator,
       fingerprint: this._bindingDraft.fingerprint,
@@ -1024,6 +1055,10 @@ class HaGroupsPanel extends LitElement {
 
   async _sync(dryRun = false) {
     await this._call("sync", { dry_run: dryRun });
+  }
+
+  async _setAutoSync(enabled) {
+    await this._call("update_options", { auto_sync: !!enabled });
   }
 
   _automationYaml(group) {
@@ -1401,8 +1436,11 @@ class HaGroupsPanel extends LitElement {
         </div>
         <h3>Who can see this?</h3>
         <p class="target-line">
-          Binding <strong>${this._selectedNodeLabel || "selected element"}</strong>
+          Binding <strong>${this._selectedNodeLabel || "selected target"}</strong>
           on <code>${d.dashboard_url_path}</code>.
+          ${this._selectedNodeSubtitle
+            ? html`<br /><span class="sub">${this._selectedNodeSubtitle}</span>`
+            : nothing}
           Pick the groups that should include this element.
         </p>
         <div class="field">
@@ -1509,6 +1547,9 @@ class HaGroupsPanel extends LitElement {
             ? html`<div class="selected-node">
                 <div class="k">Selected target</div>
                 <strong>${this._selectedNodeLabel}</strong>
+                ${this._selectedNodeSubtitle
+                  ? html`<div class="sub">${this._selectedNodeSubtitle}</div>`
+                  : nothing}
                 <div style="margin-top:6px;font-size:0.8rem;color:var(--muted)">${d.dashboard_url_path || ""}</div>
                 ${(d.include || []).length
                   ? html`<div class="chip-row" style="margin-top:10px">
@@ -1566,6 +1607,11 @@ class HaGroupsPanel extends LitElement {
       </div>
       <div class="toolbar">
         <button class="btn btn-primary" @click=${this._openBindingCreate}>New binding</button>
+        <label class="toggle-row" title="Automatically re-sync Lovelace when groups or bindings change">
+          <input type="checkbox" .checked=${this._autoSync} ?disabled=${this._busy}
+            @change=${(e) => this._setAutoSync(e.target.checked)} />
+          Auto sync
+        </label>
         <span class="spacer"></span>
         <button class="btn btn-ghost" ?disabled=${this._busy} @click=${() => this._sync(false)}>Sync now</button>
       </div>
