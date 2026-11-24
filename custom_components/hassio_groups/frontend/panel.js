@@ -1603,7 +1603,6 @@ class HaGroupsPanel extends LitElement {
     return html`
       <div class="hero">
         <h1>Visibility bindings</h1>
-        <p>AND include groups, NOT exclude groups. Empty effective membership writes <code>users: []</code> (fail closed).</p>
       </div>
       <div class="toolbar">
         <button class="btn btn-primary" @click=${this._openBindingCreate}>New binding</button>
