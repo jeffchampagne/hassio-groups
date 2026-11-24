@@ -392,3 +392,138 @@ def test_replace_mode_keeps_non_user_top_level() -> None:
     assert not any(
         c.get("condition") == "user" and c.get("users") == ["a"] for c in out
     )
+
+
+def test_audit_nested_expander_conditional_user() -> None:
+    """Expander → conditional(condition:user) → button must appear in audit."""
+    cfg = {
+        "views": [
+            {
+                "title": "Building",
+                "sections": [
+                    {
+                        "type": "grid",
+                        "cards": [
+                            {"type": "heading", "heading": "Open Doors/Windows"},
+                            {
+                                "type": "custom:expander-card",
+                                "title": "Advanced Door Controls",
+                                "cards": [
+                                    {
+                                        "type": "custom:button-card",
+                                        "name": "Immediately Lock All Doors",
+                                    },
+                                    {
+                                        "type": "conditional",
+                                        "conditions": [
+                                            {
+                                                "condition": "user",
+                                                "users": ["u1", "u2", "u3"],
+                                            }
+                                        ],
+                                        "card": {
+                                            "type": "custom:button-card",
+                                            "entity": "lock.front_door_maglock",
+                                            "name": "[[[ return \"Keep Front Door Unlocked\"; ]]]",
+                                        },
+                                    },
+                                ],
+                            },
+                        ],
+                    }
+                ],
+            }
+        ]
+    }
+    nodes = list_visibility_nodes(cfg)
+    nested = [
+        n
+        for n in nodes
+        if n["kind"] == "card"
+        and (n.get("locator") or {}).get("extra", {}).get("nested_path")
+    ]
+    assert nested, "expected nested cards under expander"
+    conditional = next(n for n in nested if n.get("type") == "conditional")
+    assert conditional["has_visibility"] is True
+    assert conditional["locator"]["card_index"] == 1
+    assert conditional["locator"]["extra"]["nested_path"] == [1]
+
+    resolved = resolve_locator(cfg, Locator.from_dict(conditional["locator"]))
+    assert resolved is not None
+    assert resolved.get("type") == "conditional"
+
+    audit = audit_dashboard_user_visibility(
+        cfg, dashboard_url_path="lovelace", bindings=[]
+    )
+    labels = [e["label"] for e in audit["elements"]]
+    assert any(e["type"] == "conditional" for e in audit["elements"])
+    row = next(e for e in audit["elements"] if e["type"] == "conditional")
+    assert row["status"] == "outside"
+    assert row["lovelace_users"] == ["u1", "u2", "u3"]
+    # JS template name rejected → entity fallback
+    assert row["label"] == "lock.front_door_maglock"
+
+    # Sync rewrite should update conditions, not invent visibility.
+    new_cfg, status = apply_binding_to_config(
+        cfg,
+        Locator.from_dict(conditional["locator"]),
+        ["a", "b"],
+    )
+    assert status == "ok"
+    node = resolve_locator(new_cfg, Locator.from_dict(conditional["locator"]))
+    assert node["conditions"][0]["users"] == ["a", "b"]
+    assert "visibility" not in node or node.get("visibility") in (None, [])
+
+
+def test_audit_nested_grid_conditional_user() -> None:
+    """Building Mode pattern: grid → conditional with or(state, user)."""
+    cfg = {
+        "views": [
+            {
+                "title": "Building",
+                "sections": [
+                    {
+                        "cards": [
+                            {"type": "heading", "heading": "Building Mode"},
+                            {
+                                "type": "grid",
+                                "cards": [
+                                    {"type": "custom:button-card", "name": "Open"},
+                                    {
+                                        "type": "conditional",
+                                        "conditions": [
+                                            {
+                                                "condition": "or",
+                                                "conditions": [
+                                                    {
+                                                        "condition": "state",
+                                                        "entity": "binary_sensor.x",
+                                                        "state": "off",
+                                                    },
+                                                    {
+                                                        "condition": "user",
+                                                        "users": ["owner"],
+                                                    },
+                                                ],
+                                            }
+                                        ],
+                                        "card": {
+                                            "type": "custom:button-card",
+                                            "name": "Closed",
+                                        },
+                                    },
+                                ],
+                            },
+                        ]
+                    }
+                ],
+            }
+        ]
+    }
+    audit = audit_dashboard_user_visibility(
+        cfg, dashboard_url_path="lovelace", bindings=[]
+    )
+    row = next(e for e in audit["elements"] if e.get("type") == "conditional")
+    assert row["label"] == "Closed"
+    assert row["lovelace_users"] == ["owner"]
+    assert row["locator"]["extra"]["nested_path"] == [1]
