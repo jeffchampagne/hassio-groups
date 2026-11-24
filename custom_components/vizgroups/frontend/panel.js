@@ -1831,6 +1831,7 @@ class VizGroupsPanel extends LitElement {
   }
 
   _openBindingCreate() {
+    this._pendingAuditRefresh = null;
     this._resetNodeBrowser();
     this._bindingDraft = {
       binding_id: "",
@@ -1998,6 +1999,7 @@ class VizGroupsPanel extends LitElement {
       label: d.label || "",
       breadcrumb: d.breadcrumb || "",
     });
+    this._pendingAuditRefresh = null;
     this._bindingDraft = null;
     this._refreshAuditAfterSave = false;
     this._resetNodeBrowser?.();
