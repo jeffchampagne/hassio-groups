@@ -779,6 +779,7 @@ class VizGroupsPanel extends LitElement {
     this._auditBusy = false;
     this._auditReport = null;
     this._auditExpanded = {};
+    this._pendingAuditRefresh = null; // dashboard path; set by Convert → cleared after save/cancel
     this._clipStatus = "";
     this._clipStatusTimer = null;
     this._pasteOpen = false;
@@ -1439,6 +1440,7 @@ class VizGroupsPanel extends LitElement {
   }
 
   _openBindingCreate() {
+    this._pendingAuditRefresh = null;
     this._resetNodeBrowser();
     this._bindingDraft = {
       binding_id: "",
@@ -1478,6 +1480,7 @@ class VizGroupsPanel extends LitElement {
       merge_mode: "ensure_user_branch",
       fingerprint: row.fingerprint || "",
     };
+    this._pendingAuditRefresh = dashboard;
     this._resetNodeBrowser();
     const title = row.label || this._locatorSummary(
       this._bindingDraft.locator,
@@ -1512,7 +1515,14 @@ class VizGroupsPanel extends LitElement {
     });
   }
 
+  _cancelBindingForm() {
+    this._pendingAuditRefresh = null;
+    this._bindingDraft = null;
+    this._resetNodeBrowser();
+  }
+
   _openEditBinding(binding) {
+    this._pendingAuditRefresh = null;
     const loc = binding.locator || {};
     this._bindingDraft = {
       binding_id: binding.id,
@@ -1559,6 +1569,7 @@ class VizGroupsPanel extends LitElement {
       this._error = "At least one include group is required";
       return;
     }
+    const refreshDash = this._pendingAuditRefresh || "";
     const locator = {
       kind: d.locator?.kind || "card",
       view_index: Number(d.locator?.view_index ?? 0),
@@ -1576,9 +1587,16 @@ class VizGroupsPanel extends LitElement {
       fingerprint: d.fingerprint || "",
       label: d.label || "",
     });
+    this._pendingAuditRefresh = null;
     this._bindingDraft = null;
+    this._resetNodeBrowser();
     // Re-sync so Lovelace visibility reflects the edit immediately.
     await this._sync(false);
+    // Convert flow: re-scan the same dashboard so the row flips to Viz Groups.
+    if (refreshDash) {
+      this._auditDashboard = refreshDash;
+      await this._runVisibilityAudit();
+    }
   }
 
   async _deleteBinding(id) {
@@ -2083,7 +2101,7 @@ class VizGroupsPanel extends LitElement {
           <button class="btn btn-ghost" type="button"
             @click=${() => (this._pickerStep = "preview")}>Select a different element</button>
           <button class="btn btn-ghost" type="button"
-            @click=${() => { this._bindingDraft = null; this._resetNodeBrowser(); }}>Cancel</button>
+            @click=${() => this._cancelBindingForm()}>Cancel</button>
         </div>
       </div>
     `;
@@ -2123,7 +2141,7 @@ class VizGroupsPanel extends LitElement {
             : html`<div class="hint">Open the visual picker and choose the dashboard, and then dashboard element you want to manage visibility for.</div>`}
           ${!inGroupsStep
             ? html`<div class="toolbar" style="margin-top:14px">
-                <button class="btn btn-ghost" @click=${() => { this._bindingDraft = null; this._resetNodeBrowser(); }}>Cancel</button>
+                <button class="btn btn-ghost" @click=${() => this._cancelBindingForm()}>Cancel</button>
               </div>`
             : nothing}
         </div>
