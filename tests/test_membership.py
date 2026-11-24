@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from vizgroups.membership import (
+    overlapping_direct_user_ids,
     effective_users,
     flatten_all_groups,
     flatten_group_users,
@@ -217,3 +218,23 @@ def test_member_user_ids_setter_preserves_nested() -> None:
     group.member_user_ids = ["u2", "u3"]
     assert group.member_user_ids == ["u2", "u3"]
     assert group.member_group_ids == ["staff"]
+
+
+def test_overlapping_direct_user_ids_with_nested_flatten() -> None:
+    tree = {
+        "building": [
+            {"type": "user", "id": "u1"},
+            {"type": "user", "id": "u2"},
+        ],
+        "leaders": [
+            {"type": "user", "id": "u1"},
+            {"type": "user", "id": "u9"},
+            {"type": "group", "id": "building"},
+        ],
+    }
+    parent_members = [
+        {"type": "user", "id": "u1"},
+        {"type": "user", "id": "u9"},
+    ]
+    assert overlapping_direct_user_ids(parent_members, "building", tree) == ["u1"]
+    assert overlapping_direct_user_ids(parent_members, "missing", tree) == []

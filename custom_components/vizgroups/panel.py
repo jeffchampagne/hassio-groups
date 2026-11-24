@@ -26,6 +26,7 @@ from .const import (
 )
 from .membership import MEMBER_TYPE_GROUP, MEMBER_TYPE_USER, flatten_group_users
 from .models import GroupExpression, Locator, new_binding, new_group, utcnow_iso
+from .schemas import ws_save_group_schema
 from .sync import (
     audit_dashboard_user_visibility,
     build_dashboard_preview_tree,
@@ -470,19 +471,7 @@ def _apply_ws_members(runtime: Any, group: Any, msg: dict[str, Any]) -> None:
     )
 
 
-@websocket_api.websocket_command(
-    {
-        vol.Required("type"): f"{DOMAIN}/save_group",
-        vol.Required("name"): str,
-        vol.Optional("group_id"): str,
-        vol.Optional("previous_group_id"): str,
-        vol.Optional("description"): str,
-        vol.Optional("icon"): str,
-        vol.Optional("member_user_ids"): [str],
-        vol.Optional("member_group_ids"): [str],
-        vol.Optional("members"): [dict],
-    }
-)
+@websocket_api.websocket_command(ws_save_group_schema(DOMAIN))
 @websocket_api.require_admin
 @websocket_api.async_response
 async def ws_save_group(
