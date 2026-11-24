@@ -755,6 +755,14 @@ def locators_match(left: Any, right: Any) -> bool:
 
 
 
+def breadcrumb_for_locator(config: dict[str, Any], locator: Any) -> str:
+    """Resolve view › section › … breadcrumb for a locator against a dashboard config."""
+    for node in list_visibility_nodes(config):
+        if locators_match(locator, node.get("locator")):
+            return str(node.get("breadcrumb") or "")
+    return ""
+
+
 def _audit_element_type(kind: str | None, node: dict[str, Any], resolved: dict[str, Any]) -> str:
     """Lovelace element type for audit rows (view mode / card type — not the title)."""
     raw = resolved.get("type")
