@@ -1,13 +1,13 @@
 {
-  "domain": "groups",
+  "domain": "vizgroups",
   "name": "Viz Groups",
   "codeowners": ["@jeffchampagne"],
   "config_flow": true,
   "dependencies": ["http", "frontend", "lovelace"],
-  "documentation": "https://github.com/jeffchampagne/hassio-groups",
+  "documentation": "https://github.com/jeffchampagne/vizgroups",
   "integration_type": "service",
   "iot_class": "local_push",
-  "issue_tracker": "https://github.com/jeffchampagne/hassio-groups/issues",
+  "issue_tracker": "https://github.com/jeffchampagne/vizgroups/issues",
   "requirements": [],
   "version": "0.1.0"
 }

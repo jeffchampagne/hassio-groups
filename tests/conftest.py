@@ -1,4 +1,4 @@
-"""Load pure groups modules without importing the HA __init__."""
+"""Load pure vizgroups modules without importing the HA __init__."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import sys
 import types
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-PKG = ROOT / "custom_components" / "groups"
+PKG = ROOT / "custom_components" / "vizgroups"
 
 
 def _load(name: str, path: pathlib.Path):
@@ -21,13 +21,13 @@ def _load(name: str, path: pathlib.Path):
 
 
 # Minimal package shell so relative imports inside sync.py work.
-if "groups" not in sys.modules:
-    pkg = types.ModuleType("groups")
+if "vizgroups" not in sys.modules:
+    pkg = types.ModuleType("vizgroups")
     pkg.__path__ = [str(PKG)]  # type: ignore[attr-defined]
     pkg.__file__ = str(PKG / "__init__.py")
-    sys.modules["groups"] = pkg
+    sys.modules["vizgroups"] = pkg
 
-_load("groups.const", PKG / "const.py")
-_load("groups.models", PKG / "models.py")
-_load("groups.membership", PKG / "membership.py")
-_load("groups.sync", PKG / "sync.py")
+_load("vizgroups.const", PKG / "const.py")
+_load("vizgroups.models", PKG / "models.py")
+_load("vizgroups.membership", PKG / "membership.py")
+_load("vizgroups.sync", PKG / "sync.py")

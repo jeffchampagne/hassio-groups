@@ -49,12 +49,11 @@ class GroupsStore:
         if group_id in self.groups:
             return self.groups[group_id]
         needle = group_id
-        if needle.startswith("sensor.groups_"):
-            needle = needle.removeprefix("sensor.groups_")
-        for group in self.groups.values():
-            if group.id == needle:
-                return group
-        return None
+        for prefix in ("sensor.vizgroups_", "sensor.groups_"):
+            if needle.startswith(prefix):
+                needle = needle.removeprefix(prefix)
+                break
+        return self.groups.get(needle)
 
     def get_binding(self, binding_id: str) -> Binding | None:
         return self.bindings.get(binding_id)
