@@ -1859,8 +1859,6 @@ class VizGroupsPanel extends LitElement {
       </div>
       <div class="toolbar">
         <button class="btn btn-primary" ?disabled=${this._busy} @click=${this._openCreateGroup}>New group</button>
-        <span class="spacer"></span>
-        <button class="btn btn-ghost" ?disabled=${this._busy} @click=${() => this._sync(false)}>Sync now</button>
       </div>
       <div class="panel">
         <table>
