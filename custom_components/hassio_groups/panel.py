@@ -13,6 +13,8 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import config_validation as cv
 
 from .const import (
+    CONF_AUTO_SYNC,
+    DEFAULT_AUTO_SYNC,
     DOMAIN,
     MERGE_ENSURE_USER_BRANCH,
     MERGE_MODES,
@@ -69,6 +71,7 @@ def async_register_websocket(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, ws_delete_binding)
     websocket_api.async_register_command(hass, ws_sync)
     websocket_api.async_register_command(hass, ws_dashboard_nodes)
+    websocket_api.async_register_command(hass, ws_update_options)
     bucket["websocket"] = True
 
 
@@ -392,3 +395,31 @@ async def ws_dashboard_nodes(
             "dashboard_url_path": path,
         },
     )
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/update_options",
+        vol.Optional("auto_sync"): cv.boolean,
+    }
+)
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_update_options(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Update config-entry options from the panel (e.g. auto_sync)."""
+    runtime = _runtime(hass)
+    entry = runtime.entry
+    if entry is None:
+        connection.send_error(msg["id"], "no_entry", "HA Groups has no config entry")
+        return
+    options = dict(entry.options)
+    if "auto_sync" in msg:
+        options[CONF_AUTO_SYNC] = bool(msg["auto_sync"])
+    hass.config_entries.async_update_entry(entry, options=options)
+    runtime.entry = entry
+    runtime.sync_engine.options = dict(options)
+    connection.send_result(msg["id"], panel_snapshot(hass))
