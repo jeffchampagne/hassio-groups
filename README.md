@@ -1,109 +1,182 @@
 # Viz Groups
 
-**Viz Groups** is a Home Assistant custom integration for first-class **user groups**: manage membership in an admin panel, bind any visibility-capable Lovelace element to include/exclude groups, and expose membership for automations and templates.
+**Viz Groups** helps you show or hide Home Assistant dashboard pieces based on who is signed in.
 
-- **Domain:** `vizgroups`
-- **GitHub:** [`jeffchampagne/hassio-vizgroups`](https://github.com/jeffchampagne/hassio-vizgroups)
-- **Panel:** sidebar **Viz Groups** at `/vizgroups` (Lit web component `vizgroups-panel`, admin-only)
-- **Storage:** Home Assistant `.storage/vizgroups` (covered by built-in HA Backup)
-- **Sensors:** `sensor.vizgroups_<group_id>` per group
-- **Visibility model:** rewrite managed `condition: user` leaves only; empty membership **fail-closes** with `users: []`
-- **Nested groups:** a group may include other groups as members; sync/sensors use cycle-safe flatten (cyclic edges skipped)
-- **Multi-group:** **AND** include ∩ **NOT** exclude
-- **Important:** Visibility is **UX, not an ACL**. Hiding a card does not block service calls via the API.
+You put people into **groups**. Then you say which groups can see a card, section, or other Lovelace element (a piece of the dashboard UI). When someone opens the dashboard, Home Assistant only shows the pieces meant for them.
 
-## Install (HACS custom repository)
+> **Important:** This is a display helper, not a security lock. Hiding something on the dashboard does not stop someone from calling services another way (for example through the API).
 
-1. HACS → Integrations → ⋮ → **Custom repositories**
-2. Add `https://github.com/jeffchampagne/hassio-vizgroups` as category **Integration**
-3. Install **Viz Groups**, then **restart** Home Assistant
-4. Settings → Devices & Services → **Add Integration** → **Viz Groups**
+Open the **Viz Groups** item in the Home Assistant sidebar (admins only). The panel lives at `/vizgroups`.
+
+---
+
+## What you can do
+
+- Create **groups** with friendly names and optional icons
+- Add **members**: Home Assistant users and other groups (nested groups)
+- **Manage visibility** for dashboard elements with a visual picker
+- Require membership in **all** chosen include groups (AND), and optionally hide for exclude groups (NOT)
+- **Audit** dashboards for existing people-visibility rules and **Convert** manual ones into Viz Groups
+- Use group membership in **automations and templates** (advanced)
+
+Your group settings are stored in Home Assistant’s `.storage` (covered by the built-in HA Backup).
+
+---
+
+## Quick start
+
+### Install with HACS
+
+1. Open **HACS** → **Integrations**.
+2. Open the menu (⋮) → **Custom repositories**.
+3. Add `https://github.com/jeffchampagne/hassio-vizgroups` as category **Integration**.
+4. Install **Viz Groups**.
+5. **Restart** Home Assistant.
+6. Go to **Settings → Devices & Services → Add Integration** → **Viz Groups**.
 
 ### Manual install
 
-Copy `custom_components/vizgroups` into your HA `custom_components/` folder, restart, then add the integration.
+1. Copy the `custom_components/vizgroups` folder into your Home Assistant `custom_components/` folder.
+2. Restart Home Assistant.
+3. Add the **Viz Groups** integration (same as step 6 above).
 
-## Setup
+### First setup
 
-1. Add the **Viz Groups** integration (single instance).
-2. Open the **Viz Groups** sidebar panel (admins only).
-3. Create groups and assign members:
-   - Friendly names are primary; user IDs appear as subtitles on detail rows.
-   - Membership **auto-saves** on add/remove for existing groups (name/description/icon still use Save).
-   - Group icon browser loads Home Assistant’s full MDI set from `/static/mdi/iconList.json` (same catalog as `ha-icon-picker`) — search by name or keywords (e.g. `thermometer`). Falls back to a curated list if the catalog cannot load.
-4. Manage visibility bindings from **Manage visibility** (table + visual picker) or list bindings under **Conditionals**.
-5. Sync runs automatically when membership or bindings change; use **Sync now** / dry-run from the panel when needed.
+1. Add the integration (only one instance).
+2. Open **Viz Groups** in the sidebar.
+3. Create a group and add members.
+4. Open **Manage visibility**, pick a dashboard element, and choose which groups can see it.
 
-Options (integration → Configure):
+Sync runs automatically when membership or visibility rules change. You can also press **Sync now** on the Manage visibility tab anytime.
 
-| Option | Default | Notes |
-|---|---|---|
-| Dry-run | off | Compute rewrites without saving dashboards |
-| Normalize duplicates | on | Dedupe + stable-sort user IDs |
-| Dashboard allowlist | empty | Comma-separated `url_path` values; empty = all storage dashboards |
+---
 
-YAML-mode dashboards are supported when a writable YAML path can be resolved; otherwise sync reports an error for that dashboard.
-
-## Panel
+## Everyday use
 
 ### Groups
 
-Create/edit groups, members, and icons. Group IDs are auto-generated and read-only after create (shown under Advanced).
+On the **Groups** tab:
+
+1. Click **New group**.
+2. Enter a **friendly name** (this is what you see day to day).
+3. Optionally set a description and icon. The icon browser uses Home Assistant’s icon set (search by name or keyword).
+4. Click **Save**.
+
+**Group ID** (the technical id used behind the scenes) is created for you. After you create a group it is read-only. You can view it under **Advanced**. You usually do not need to touch it.
+
+The groups table is sortable by **Name**.
+
+### Members
+
+Open a group to manage members.
+
+- Add **Home Assistant users** by clicking them in the picker.
+- Add **other groups** as nested members the same way. Nested groups show as chips on the groups list. In the editor they use a distinct style, and you can expand them to see who is inside.
+- For an existing group, adding or removing members **saves right away**. Name, description, and icon still use **Save**.
+- Friendly names are shown first. User IDs appear as a subtitle on detail screens.
+
+**Nested groups and safety**
+
+- Nesting is cycle-safe: if groups point at each other in a loop, Viz Groups skips the looping link instead of getting stuck.
+- An **empty group** (no effective users) **fails closed**: anything that includes only that group is hidden for everyone.
 
 ### Manage visibility
 
-- Table of bindings with **friendly names** (entity friendly names, mushroom `primary`/`secondary`, section/card headings — not raw `entity_id` / card type alone).
-- Element **breadcrumb** under the label (view › section › …).
-- **Visual picker:** choose dashboard → rendered preview → click the element. Toolbar sits under **Selected target**. Include groups first; exclude is optional/secondary; locator tech fields under Advanced.
-- **Sync now** from this view.
+Use this tab to control who sees dashboard elements.
 
-### Conditionals
+1. Click **Set visibility**.
+2. Open the **visual picker**.
+3. Choose a **dashboard**.
+4. Look at the **preview**, then **click** the view, section, or card you want.
+5. Under **Who can see this?**, pick one or more **include** groups.
+6. Optionally open **Exclude groups** to hide the element from those groups.
+7. Click **Save visibility** (or **Save & sync** when editing).
 
-Lists bindings and points at group membership sensors for templates / automations.
+**Sync now** is on this tab. Auto sync is always on (there is no toggle).
 
-### Visibility Audit + Convert
+The managed-elements table is sortable by **Element**, **Dashboard**, and **Status**.
 
-Pick a dashboard (including **Overview**, loaded from `.storage/lovelace.lovelace` on modern HA when Overview is taken control). Scans people-visibility gates — including nested expander / stack / grid / conditional cards — and classifies each row:
+### How include and exclude work
+
+- **Include** (required): the signed-in user must be in **every** include group you selected (AND).
+- **Exclude** (optional): the user must **not** be in any exclude group (NOT).
+
+Example: include `Teachers` and `Staff`, exclude `Guests` → only people in both Teachers and Staff, and not in Guests, see the element.
+
+If the include set ends up with no users (for example an empty group), the element stays hidden for everyone.
+
+### Visibility audit and Convert
+
+On the same **Manage visibility** page, open **Visibility audit**:
+
+1. Pick a dashboard.
+2. Click **Run audit**.
+3. Review elements that already have people-visibility rules.
 
 | Source | Meaning |
 |---|---|
-| **Viz Groups** | Matched to a binding managed by this integration |
-| **Manual Dashboard Config** | People visibility present without a matching binding |
+| **Viz Groups** | Managed by this integration |
+| **Manual Dashboard Config** | Set directly on the dashboard, not yet managed here |
 
-For Manual Dashboard Config rows, **Convert** creates a Viz Groups binding (preserving `nested_path` for nested cards) and refreshes the audit afterward.
+For manual rows, click **Convert**. That opens Set visibility with the element already selected so you can attach groups and let Viz Groups manage it going forward.
 
-## Visibility sync (fail-closed)
+The audit table is sortable by **Element** and **Source**.
 
-Effective users for a binding:
+### Conditionals (optional)
 
-1. Flatten each group’s members (HA users + nested groups). **Cycles:** skip the cyclic edge; missing nested groups contribute nothing.
-2. Intersection of all **include** group effective users (AND). Empty include → empty set (**fail closed**).
-3. Subtract union of all **exclude** group effective users (NOT).
-4. Dedupe + stable sort.
-5. Write `{"condition":"user","users":[...]}` — including `users: []` when empty so the element stays hidden.
+The **Conditionals** tab lists each group’s membership sensor (for example `sensor.vizgroups_<group_id>`). You can use those sensors in automations and templates to check membership or non-membership. Create a group first to see the sample template.
 
-Storage members are typed: `{"type":"user"|"group","id":"..."}` (legacy `member_user_ids` still loads).
+---
 
-### Conditionals & OR trees
+## Tips and safety
 
-- Sync **rewrites existing** managed `condition: user` leaves inside `visibility` or conditional `conditions` trees (including nested `or` / `and`).
-- Non-user siblings (e.g. `state` conditions) are kept.
-- Sync does **not invent** new people-visibility on elements that have none.
-- For `type: conditional` cards, people gates live in `conditions`; sync updates those leaves and does not invent a sibling `visibility` block.
+- Visibility only affects what the dashboard shows. It is **not** a full access-control system.
+- Prefer friendly names. Leave **Advanced** alone unless you need technical details.
+- Empty groups hide content for everyone (fail closed). Add members before relying on a group.
+- Nested groups are fine; circular nesting is skipped safely.
+- After you change members or visibility rules, auto sync updates the dashboards. Use **Sync now** if something looks out of date.
+- Click table headers to sort (Groups by name; Manage visibility and audit columns as described above).
 
-Lab / example Lovelace url_path key: `vizgroups-lab` (hyphenated; domain remains `vizgroups`).
+---
 
-## Sensors
+## Optional advanced
 
-Each group exposes `sensor.vizgroups_<group_id>`:
+### Integration options
+
+Open the Viz Groups integration → **Configure**:
+
+| Option | Default | Notes |
+|---|---|---|
+| Dry-run | off | Compute dashboard rewrites without saving them |
+| Normalize duplicates | on | Deduplicate and stably sort user IDs |
+| Dashboard allowlist | empty | Comma-separated dashboard paths; empty means all storage dashboards |
+
+YAML-mode dashboards work when Viz Groups can find a writable YAML path. Otherwise sync reports an error for that dashboard.
+
+### How sync writes visibility
+
+Sync updates the people/user visibility rules that Viz Groups manages. It:
+
+1. Flattens each group (users + nested groups), skipping cycles.
+2. Takes the intersection of all include groups (AND).
+3. Removes everyone in any exclude group (NOT).
+4. Writes a `condition: user` rule with that user list — including an empty list when nobody should see it.
+
+It does not invent people-visibility on elements that never had it. Non-user conditions (for example state conditions) are kept.
+
+### Sensors
+
+Each group has `sensor.vizgroups_<group_id>`:
 
 | Field | Meaning |
 |---|---|
-| **state** | Member count |
-| **attributes.members** | List of HA user IDs |
-| **attributes.member_names** | Parallel friendly names |
-| **attributes.group_id** | Group id |
+| **state** | Effective member count |
+| **attributes.members** | Home Assistant user IDs |
+| **attributes.member_names** | Matching friendly names |
+| **attributes.group_id** | Group ID |
 | **attributes.description** / **icon** | Group metadata |
+
+Example template condition:
 
 ```yaml
 conditions:
@@ -113,34 +186,23 @@ conditions:
          in state_attr('sensor.vizgroups_teachers', 'members') }}
 ```
 
-Non-membership:
+### Services
 
-```yaml
-{{ trigger.to_state.context.user_id
-   not in state_attr('sensor.vizgroups_teachers', 'members') }}
-```
+Service domain: `vizgroups.`
 
-## Services
+- Groups: `create_group`, `update_group`, `delete_group`
+- Members: `set_members`, `add_members`, `remove_members`
+- Visibility: `bind_element`, `unbind_element`, `sync`
+- Helpers: `is_member`, `debug_dashboard`
 
-Domain prefix: `vizgroups.`
-
-- `create_group` / `update_group` / `delete_group`
-- `set_members` / `add_members` / `remove_members`
-- `bind_element` / `unbind_element`
-- `sync` (optional `dashboard`, `dry_run`)
-- `is_member` (response service)
-- `debug_dashboard` (response service; preview/tree diagnostics)
-
-Websocket commands used by the panel follow the same domain (`vizgroups/subscribe`, `vizgroups/save_group`, `vizgroups/visibility_audit`, …).
-
-## Development
+### Development
 
 ```bash
 python -m pytest tests/
 node --check custom_components/vizgroups/frontend/panel.js
 ```
 
-Pure sync / locator / membership logic is unit-tested without a live Home Assistant instance.
+---
 
 ## License
 
