@@ -11,8 +11,9 @@ from typing import Any
 import voluptuous as vol
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse
+from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse, callback
 from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.typing import ConfigType
 
 from .const import (
@@ -43,6 +44,9 @@ from .store import GroupsStore
 _LOGGER = logging.getLogger(__name__)
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
+
+# Coalesce rapid membership autosaves into one Lovelace rewrite.
+AUTOSYNC_DEBOUNCE_SECONDS = 1.5
 
 def _reload_ws_modules() -> None:
     """Reload integration modules from disk without a Core restart.
@@ -126,6 +130,9 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         unload_ok = True
     runtime = hass.data.get(DOMAIN, {}).pop(entry.entry_id, None)
     if runtime:
+        if runtime._autosync_unsub is not None:  # noqa: SLF001
+            runtime._autosync_unsub()  # noqa: SLF001
+            runtime._autosync_unsub = None  # noqa: SLF001
         runtime.unregister_services_if_last()
     return True if unload_ok is None else bool(unload_ok)
 
@@ -152,7 +159,7 @@ class GroupsRuntime:
         self.sensors: dict[str, GroupMembershipSensor] = {}
         self.sensor_add_entities: Any | None = None
         self._services_registered = False
-
+        self._autosync_unsub: Any | None = None
 
     def _get_users_sync(self) -> list[Any]:
         """Return HA users; compatible with sync or async async_get_users()."""
@@ -277,7 +284,21 @@ class GroupsRuntime:
             await sensor.async_remove()
 
     async def async_maybe_autosync(self) -> None:
-        # Auto-sync is always on (UI toggle removed).
+        """Queue an auto-sync (always on). Debounced so rapid member edits share one run."""
+        if self._autosync_unsub is not None:
+            self._autosync_unsub()
+            self._autosync_unsub = None
+
+        @callback
+        def _fire(_now: Any) -> None:
+            self._autosync_unsub = None
+            self.hass.async_create_task(self._async_run_autosync())
+
+        self._autosync_unsub = async_call_later(
+            self.hass, AUTOSYNC_DEBOUNCE_SECONDS, _fire
+        )
+
+    async def _async_run_autosync(self) -> None:
         try:
             await self.sync_engine.async_sync()
         except Exception:  # noqa: BLE001
